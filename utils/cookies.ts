@@ -26,10 +26,15 @@ export function shouldUseSecureCookie(): boolean {
 }
 
 function buildBaseOptions(maxAgeSeconds: number): CookieSerializeOptions {
+  // SameSite=Lax (not Strict) is required for the OAuth flow:
+  // - State cookie must be sent on the Microsoft → callback navigation (cross-site initiated)
+  // - Session cookie must be sent on the callback → / redirect (initiated by external response)
+  // Strict would break both. Lax still blocks CSRF (no cookie on cross-site POST/AJAX)
+  // and keeps full XSS protection via HttpOnly.
   const opts: CookieSerializeOptions = {
     httpOnly: true,
     secure: shouldUseSecureCookie(),
-    sameSite: 'strict',
+    sameSite: 'lax',
     path: '/',
     maxAge: maxAgeSeconds,
   };
