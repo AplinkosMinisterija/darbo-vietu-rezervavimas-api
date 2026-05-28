@@ -192,12 +192,37 @@ export interface UserAuthMeta {
       const result = verifySession(token);
       if (!result.ok) return null;
 
-      // Phase 0: we trust the JWT payload directly. Phase 1 will replace this
-      // with a `users.resolveById` call (DB-backed) so role changes take
-      // effect on the next request rather than waiting for token expiry.
+      // Hydrate the user row from the DB so role changes take effect on the
+      // next request rather than waiting for the JWT to expire. A deleted
+      // user is treated as unauthenticated (`null` → gateway 401), which is
+      // the safe fail-closed posture if an admin purges a compromised
+      // account mid-session.
+      let row: any;
+      let lookupFailed = false;
+      try {
+        row = await ctx.broker.call(
+          'users.resolveById',
+          { id: String(result.payload.sub) },
+          { meta: { _systemTransition: true } } as any,
+        );
+      } catch (err: any) {
+        // DB blip — fall back to the JWT payload so the API stays usable
+        // briefly. Persistent failures will show up in logs.
+        lookupFailed = true;
+        ctx.broker.logger.warn(
+          `[api.authenticate] users.resolveById failed: ${err?.message || err}`,
+        );
+      }
+
+      // Clean null (user deleted) — fail closed. Lookup exception — fall
+      // back to JWT payload for transient resilience.
+      if (!lookupFailed && row == null) return null;
+
       const user: AuthUser = {
-        id: String(result.payload.sub),
-        role: (result.payload.role as UserRole) || UserRole.USER,
+        id: row?.id ? String(row.id) : String(result.payload.sub),
+        role: (row?.role as UserRole) || (result.payload.role as UserRole) || UserRole.USER,
+        email: row?.email,
+        displayName: row?.displayName,
       };
       ctx.meta.user = user;
       return user;

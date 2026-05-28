@@ -82,3 +82,24 @@ export function parseCookies(header: string | undefined | null): Record<string, 
     return {};
   }
 }
+
+/**
+ * Helper to append a Set-Cookie value to `ctx.meta.$responseHeaders` without
+ * clobbering any existing Set-Cookie (e.g. emitting the session cookie
+ * alongside a clear-cookie for the OAuth state in the callback handler).
+ *
+ * Node's HTTP layer sends one Set-Cookie response header per array element,
+ * so combining cookies as an array is the canonical pattern.
+ */
+export function appendSetCookieToMeta(meta: any, cookieString: string): void {
+  const existing = meta?.$responseHeaders?.['Set-Cookie'];
+  const next = existing
+    ? Array.isArray(existing)
+      ? [...existing, cookieString]
+      : [existing, cookieString]
+    : cookieString;
+  meta.$responseHeaders = {
+    ...(meta?.$responseHeaders || {}),
+    'Set-Cookie': next,
+  };
+}
