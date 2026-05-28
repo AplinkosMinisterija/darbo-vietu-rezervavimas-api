@@ -10,13 +10,12 @@ import { serializeSessionCookie, appendSetCookieToMeta } from '../utils/cookies'
 import { UserRole } from '../types/constants';
 
 /**
- * Emergency admin login.
+ * Admin login (username + password).
  *
- * Fallback path when Microsoft OAuth is unavailable (Azure secret expired,
- * tenant outage, etc.). Logs the user in as a pre-designated ADMIN account
- * using a bcrypt-hashed password stored in env. Never replaces Microsoft
- * OAuth for normal use — there is no link from the main UI to this page;
- * the URL `/admin/emergency-login` is a bookmark.
+ * Separate from the Microsoft OAuth flow used by regular @am.lt users.
+ * Admins ALWAYS log in via /admin/login — Microsoft accounts are treated
+ * as USER role regardless of email. Bcrypt-hashed password in env, no DB
+ * password column.
  *
  * Security:
  *  - bcrypt(12) password verification, constant-time via bcrypt's own impl
@@ -61,18 +60,18 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000).unref();
 
-interface EmergencyEnv {
+interface AdminEnv {
   username: string;
   passwordHash: string;
   email: string;
   displayName: string;
 }
 
-function readEmergencyEnv(): EmergencyEnv | null {
-  const username = (process.env.EMERGENCY_ADMIN_USERNAME || '').trim();
-  const passwordHash = (process.env.EMERGENCY_ADMIN_PASSWORD_HASH || '').trim();
-  const email = (process.env.EMERGENCY_ADMIN_EMAIL || '').trim().toLowerCase();
-  const displayName = (process.env.EMERGENCY_ADMIN_DISPLAY_NAME || 'Emergency Admin').trim();
+function readAdminEnv(): AdminEnv | null {
+  const username = (process.env.ADMIN_USERNAME || '').trim();
+  const passwordHash = (process.env.ADMIN_PASSWORD_HASH || '').trim();
+  const email = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+  const displayName = (process.env.ADMIN_DISPLAY_NAME || 'Administratorius').trim();
 
   if (!username || !passwordHash || !email) {
     return null;
@@ -80,31 +79,31 @@ function readEmergencyEnv(): EmergencyEnv | null {
   return { username, passwordHash, email, displayName };
 }
 
-type EmergencyAuthMeta = {
+type AdminAuthMeta = {
   user?: any;
   $statusCode?: number;
   $responseHeaders?: Record<string, string | string[]>;
   $responseType?: string;
 };
 
-export default class EmergencyAuthService extends Service {
+export default class AdminAuthService extends Service {
   private db = knex(knexConfig as any);
 
   public constructor(broker: ServiceBroker) {
     super(broker);
     this.parseServiceSchema({
-      name: 'emergencyAuth',
+      name: 'adminAuth',
       actions: {
-        emergencyLogin: {
+        adminLogin: {
           // No `rest:` — explicit alias in api.service.ts publishes this
-          // as `POST /api/auth/emergency-login` (autoAliases would prepend
-          // the service name, giving `/api/emergencyAuth/auth/emergency-login`).
+          // as `POST /api/auth/admin-login` (autoAliases would prepend
+          // the service name, giving `/api/adminAuth/auth/admin-login`).
           auth: false,
           params: {
             username: { type: 'string', min: 1, max: 64 },
             password: { type: 'string', min: 1, max: 256 },
           },
-          handler: this.handleEmergencyLogin,
+          handler: this.handleAdminLogin,
         },
       },
       stopped: async () => {
@@ -113,15 +112,15 @@ export default class EmergencyAuthService extends Service {
     });
   }
 
-  private async handleEmergencyLogin(
-    ctx: Context<{ username: string; password: string }, EmergencyAuthMeta>,
+  private async handleAdminLogin(
+    ctx: Context<{ username: string; password: string }, AdminAuthMeta>,
   ): Promise<{ ok: true } | never> {
-    const env = readEmergencyEnv();
+    const env = readAdminEnv();
     if (!env) {
       throw new Errors.MoleculerClientError(
-        'Emergency login disabled (env vars not configured).',
+        'Admin login disabled (env vars not configured).',
         503,
-        'EMERGENCY_LOGIN_DISABLED',
+        'ADMIN_LOGIN_DISABLED',
       );
     }
 
@@ -129,7 +128,7 @@ export default class EmergencyAuthService extends Service {
     const limit = checkAndRecordAttempt(ip);
     if (!limit.allowed) {
       await this.audit({
-        action: 'EMERGENCY_LOGIN_RATE_LIMITED',
+        action: 'ADMIN_LOGIN_RATE_LIMITED',
         payload: { ip, retryAfterSec: limit.retryAfterSec },
       });
       throw new Errors.MoleculerClientError(
@@ -145,7 +144,7 @@ export default class EmergencyAuthService extends Service {
 
     if (!usernameMatches || !passwordMatches) {
       await this.audit({
-        action: 'EMERGENCY_LOGIN_FAILED',
+        action: 'ADMIN_LOGIN_FAILED',
         payload: { ip, username },
       });
       throw new Errors.MoleculerClientError(
@@ -157,7 +156,7 @@ export default class EmergencyAuthService extends Service {
 
     clearAttempts(ip);
 
-    const user = await this.findOrCreateEmergencyUser(env);
+    const user = await this.findOrCreateAdminUser(env);
     const token = signSession({
       sub: user.id,
       role: UserRole.ADMIN,
@@ -168,7 +167,7 @@ export default class EmergencyAuthService extends Service {
     ctx.meta.$statusCode = 200;
 
     await this.audit({
-      action: 'EMERGENCY_LOGIN_SUCCESS',
+      action: 'ADMIN_LOGIN_SUCCESS',
       payload: { ip, userId: user.id, email: user.email },
       userId: user.id,
     });
@@ -176,7 +175,7 @@ export default class EmergencyAuthService extends Service {
     return { ok: true };
   }
 
-  private resolveIp(ctx: Context<unknown, EmergencyAuthMeta>): string {
+  private resolveIp(ctx: Context<unknown, AdminAuthMeta>): string {
     const meta = ctx.meta as any;
     const headers = meta?.headers ?? meta?.parentCtx?.params?.req?.headers ?? {};
     const xff = headers['x-forwarded-for'];
@@ -190,7 +189,7 @@ export default class EmergencyAuthService extends Service {
     );
   }
 
-  private async findOrCreateEmergencyUser(env: EmergencyEnv) {
+  private async findOrCreateAdminUser(env: AdminEnv) {
     const existing = await this.db('users').where('email', env.email).first();
     if (existing) {
       if (existing.role !== UserRole.ADMIN) {
