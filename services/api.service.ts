@@ -98,6 +98,10 @@ export interface UserAuthMeta {
         // on the `api` service (it prepends the service name).
         aliases: {
           'GET /health': 'api.health',
+          // Explicit alias so the emergency login path is `/api/auth/emergency-login`
+          // rather than `/api/emergencyAuth/auth/emergency-login` that autoAliases
+          // would publish (service-name prefix). FE bookmark URL matches this.
+          'POST /auth/emergency-login': 'emergencyAuth.emergencyLogin',
         },
         bodyParsers: {
           // JSON payload limit. Reservation payloads are tiny (a few hundred

@@ -96,7 +96,10 @@ export default class EmergencyAuthService extends Service {
       name: 'emergencyAuth',
       actions: {
         emergencyLogin: {
-          rest: 'POST /auth/emergency-login',
+          // No `rest:` — explicit alias in api.service.ts publishes this
+          // as `POST /api/auth/emergency-login` (autoAliases would prepend
+          // the service name, giving `/api/emergencyAuth/auth/emergency-login`).
+          auth: false,
           params: {
             username: { type: 'string', min: 1, max: 64 },
             password: { type: 'string', min: 1, max: 256 },
