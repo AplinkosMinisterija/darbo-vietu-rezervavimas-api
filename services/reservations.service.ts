@@ -22,6 +22,21 @@ interface UserAuthMeta {
  * already shown on the prototype tooltip and the email is treated as PII
  * (the FE renders only displayName).
  */
+// PG `DATE` columns come back as JS Date objects via pg driver. FE expects a
+// plain `YYYY-MM-DD` string (passed straight into URL params, displayed via
+// parseYmd). Coerce in one place rather than touching every consumer.
+function ymd(v: unknown): string {
+  if (!v) return '';
+  if (typeof v === 'string') return v.slice(0, 10);
+  if (v instanceof Date) {
+    const y = v.getUTCFullYear();
+    const m = String(v.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(v.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  return String(v).slice(0, 10);
+}
+
 // knexfile uses knexSnakeCaseMappers — column names come back camelCased.
 // `r.room_id AS user_id` round-trips as `userId`, `u.display_name AS user_display_name`
 // becomes `userDisplayName`, etc.
@@ -30,7 +45,7 @@ function projectReservationWithUser(row: any) {
     id: row.id,
     roomId: row.roomId,
     deskNumber: row.deskNumber,
-    date: row.date,
+    date: ymd(row.date),
     user: {
       id: row.userId,
       displayName: row.userDisplayName,
@@ -44,7 +59,7 @@ function projectReservationWithRoom(row: any) {
     id: row.id,
     roomId: row.roomId,
     deskNumber: row.deskNumber,
-    date: row.date,
+    date: ymd(row.date),
     room: {
       number: row.roomNumber,
       name: row.roomName,
@@ -59,7 +74,7 @@ function projectAdminReservation(row: any) {
     id: row.id,
     roomId: row.roomId,
     deskNumber: row.deskNumber,
-    date: row.date,
+    date: ymd(row.date),
     user: {
       id: row.userId,
       displayName: row.userDisplayName,
