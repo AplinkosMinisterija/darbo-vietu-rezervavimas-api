@@ -38,7 +38,7 @@ export default class StatsService extends moleculer.Service {
   @Action({
     rest: 'GET /',
     auth: true,
-    types: [EndpointType.USER],
+    types: [EndpointType.ADMIN],
     params: {
       date: { type: 'string', pattern: DATE_PATTERN },
     },
