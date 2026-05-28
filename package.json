@@ -11,7 +11,7 @@
     "db:seed": "knex seed:run",
     "build": "tsc --build tsconfig.json",
     "dev": "yarn db:migrate && ts-node ./node_modules/moleculer/bin/moleculer-runner.js --env --hot --repl --config moleculer.config.ts services/**/*.service.ts",
-    "start": "knex migrate:latest --knexfile /app/dist/knexfile.js && cd /app/dist && SERVICEDIR=/app/dist/services node /app/node_modules/moleculer/bin/moleculer-runner.js --config /app/dist/moleculer.config.js",
+    "start": "knex migrate:latest --knexfile /app/dist/knexfile.js && knex seed:run --knexfile /app/dist/knexfile.js && cd /app/dist && SERVICEDIR=/app/dist/services node /app/node_modules/moleculer/bin/moleculer-runner.js --config /app/dist/moleculer.config.js",
     "lint": "eslint --ext .js,.ts ."
   },
   "dependencies": {
