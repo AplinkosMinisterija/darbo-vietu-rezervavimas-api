@@ -182,8 +182,8 @@ export default class RoomsService extends moleculer.Service {
         number: created.number,
         name: created.name,
         floor: created.floor,
-        deskCount: created.desk_count,
-        isShared: created.is_shared,
+        deskCount: created.deskCount,
+        isShared: created.isShared,
       });
 
       return normalizeRoomRow(created);
@@ -249,8 +249,8 @@ export default class RoomsService extends moleculer.Service {
         .select('desk_number', 'date');
 
       if (orphans.length > 0) {
-        const lo = Math.min(...orphans.map((r: any) => Number(r.desk_number)));
-        const hi = Math.max(...orphans.map((r: any) => Number(r.desk_number)));
+        const lo = Math.min(...orphans.map((r: any) => Number(r.deskNumber)));
+        const hi = Math.max(...orphans.map((r: any) => Number(r.deskNumber)));
         throw new Errors.MoleculerClientError(
           `Stalai ${lo}..${hi} turi būsimas rezervacijas, atšaukite prieš mažinant`,
           409,

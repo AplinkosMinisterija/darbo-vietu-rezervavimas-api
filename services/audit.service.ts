@@ -104,12 +104,13 @@ export default class AuditService extends moleculer.Service {
       .offset(offset);
 
     return {
+      // knexSnakeCaseMappers converts row keys to camelCase.
       items: rows.map((r: any) => ({
         id: r.id,
-        userId: r.user_id,
+        userId: r.userId,
         action: r.action,
         payload: r.payload,
-        createdAt: r.created_at,
+        createdAt: r.createdAt,
       })),
       total: Number(count),
     };

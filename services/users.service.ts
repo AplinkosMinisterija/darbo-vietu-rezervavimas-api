@@ -381,10 +381,11 @@ export default class UsersService extends moleculer.Service {
     const rows = await db('users').where({ id }).limit(1);
     if (rows.length === 0) return null;
     const user = this.normalizeUserRow(rows[0]);
+    // knexSnakeCaseMappers: pass camelCase column names; rows come back camelCased.
     const assignments = await db('user_room_assignments')
-      .where({ user_id: id })
-      .select('room_id');
-    return { ...user, allowedRoomIds: assignments.map((a: any) => a.room_id) };
+      .where({ userId: id })
+      .select('roomId');
+    return { ...user, allowedRoomIds: assignments.map((a: any) => a.roomId) };
   }
 
   @Method
