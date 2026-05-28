@@ -1,0 +1,20 @@
+name: Publish docker image (development tag)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  publish:
+    name: Build and push to ghcr.io
+    uses: AplinkosMinisterija/reusable-workflows/.github/workflows/docker-build-push.yml@main
+    permissions:
+      contents: read
+      packages: write
+    with:
+      docker-image: ghcr.io/aplinkosministerija/stalu-rezervavimas-api
+      environment: development
+      runs-on: ubuntu-latest
+      latest-tag: true
+      push: true
