@@ -7,14 +7,12 @@ COPY package.json yarn.lock* ./
 RUN yarn install --frozen-lockfile --production=false
 COPY . .
 RUN yarn build
-COPY database ./dist/database
 
 FROM base
 WORKDIR /app
 COPY package.json yarn.lock* ./
 RUN yarn install --frozen-lockfile --production && yarn cache clean
 COPY --from=builder /app/dist/ ./dist/
-COPY --from=builder /app/database/ ./database/
 
 ARG VERSION
 ENV VERSION=${VERSION}
