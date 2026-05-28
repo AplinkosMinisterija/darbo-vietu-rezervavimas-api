@@ -28,14 +28,15 @@ interface UserAuthMeta {
  */
 function normalizeRoomRow(row: any) {
   if (!row) return null;
+  // knexfile uses knexSnakeCaseMappers — rows come back camelCased already.
   return {
     id: row.id,
     number: row.number,
     name: row.name,
     floor: row.floor,
-    deskCount: row.desk_count,
-    isShared: row.is_shared,
-    createdAt: row.created_at,
+    deskCount: row.deskCount,
+    isShared: row.isShared,
+    createdAt: row.createdAt,
   };
 }
 
@@ -240,7 +241,7 @@ export default class RoomsService extends moleculer.Service {
     const existing = existingRows[0];
 
     // Only check future reservations when desk_count is actually shrinking.
-    if (typeof ctx.params.deskCount === 'number' && ctx.params.deskCount < existing.desk_count) {
+    if (typeof ctx.params.deskCount === 'number' && ctx.params.deskCount < existing.deskCount) {
       const orphans = await db('reservations')
         .where({ room_id: ctx.params.id })
         .andWhere('date', '>=', db.raw('CURRENT_DATE'))

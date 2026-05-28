@@ -22,52 +22,55 @@ interface UserAuthMeta {
  * already shown on the prototype tooltip and the email is treated as PII
  * (the FE renders only displayName).
  */
+// knexfile uses knexSnakeCaseMappers — column names come back camelCased.
+// `r.room_id AS user_id` round-trips as `userId`, `u.display_name AS user_display_name`
+// becomes `userDisplayName`, etc.
 function projectReservationWithUser(row: any) {
   return {
     id: row.id,
-    roomId: row.room_id,
-    deskNumber: row.desk_number,
+    roomId: row.roomId,
+    deskNumber: row.deskNumber,
     date: row.date,
     user: {
-      id: row.user_id,
-      displayName: row.user_display_name,
+      id: row.userId,
+      displayName: row.userDisplayName,
     },
-    createdAt: row.created_at,
+    createdAt: row.createdAt,
   };
 }
 
 function projectReservationWithRoom(row: any) {
   return {
     id: row.id,
-    roomId: row.room_id,
-    deskNumber: row.desk_number,
+    roomId: row.roomId,
+    deskNumber: row.deskNumber,
     date: row.date,
     room: {
-      number: row.room_number,
-      name: row.room_name,
-      floor: row.room_floor,
+      number: row.roomNumber,
+      name: row.roomName,
+      floor: row.roomFloor,
     },
-    createdAt: row.created_at,
+    createdAt: row.createdAt,
   };
 }
 
 function projectAdminReservation(row: any) {
   return {
     id: row.id,
-    roomId: row.room_id,
-    deskNumber: row.desk_number,
+    roomId: row.roomId,
+    deskNumber: row.deskNumber,
     date: row.date,
     user: {
-      id: row.user_id,
-      displayName: row.user_display_name,
-      email: row.user_email,
+      id: row.userId,
+      displayName: row.userDisplayName,
+      email: row.userEmail,
     },
     room: {
-      number: row.room_number,
-      name: row.room_name,
-      floor: row.room_floor,
+      number: row.roomNumber,
+      name: row.roomName,
+      floor: row.roomFloor,
     },
-    createdAt: row.created_at,
+    createdAt: row.createdAt,
   };
 }
 

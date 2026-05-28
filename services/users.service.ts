@@ -143,10 +143,10 @@ export default class UsersService extends moleculer.Service {
       // Drift detection: Microsoft may have rotated the user's display name
       // or backfilled the ms_object_id for a seeded stub. Reconcile silently.
       const updatePayload: any = {};
-      if (ctx.params.msObjectId && existing.ms_object_id !== ctx.params.msObjectId) {
+      if (ctx.params.msObjectId && existing.msObjectId !== ctx.params.msObjectId) {
         updatePayload.ms_object_id = ctx.params.msObjectId;
       }
-      if (ctx.params.displayName && existing.display_name !== ctx.params.displayName) {
+      if (ctx.params.displayName && existing.displayName !== ctx.params.displayName) {
         updatePayload.display_name = ctx.params.displayName;
       }
       if (Object.keys(updatePayload).length > 0) {
@@ -364,14 +364,15 @@ export default class UsersService extends moleculer.Service {
   @Method
   normalizeUserRow(row: any): any {
     if (!row) return null;
+    // knexfile uses knexSnakeCaseMappers — rows come back camelCased.
     return {
       id: row.id,
-      msObjectId: row.ms_object_id ?? null,
+      msObjectId: row.msObjectId ?? null,
       email: row.email,
-      displayName: row.display_name,
+      displayName: row.displayName,
       role: row.role,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
     };
   }
 
