@@ -240,6 +240,23 @@ export default class AuthService extends moleculer.Service {
       return this.redirect(ctx, `${frontend}/login?error=wrong_tenant`);
     }
 
+    // Email domain whitelist (defense in depth). The tenant guard above
+    // covers external personal Microsoft accounts. This catches a rarer
+    // case: an Azure AD guest user who is in the AM tenant but signs in
+    // with a non-@am.lt email (e.g. an external contractor). For an
+    // internal AM tool, only @am.lt mailboxes should pass.
+    const allowedDomains = (process.env.ALLOWED_EMAIL_DOMAINS || 'am.lt')
+      .split(',')
+      .map((d) => d.trim().toLowerCase())
+      .filter(Boolean);
+    const emailDomain = email.toLowerCase().split('@').pop() ?? '';
+    if (!allowedDomains.includes(emailDomain)) {
+      this.logger.warn(
+        `[auth] domain rejected: email=${email} allowed=${allowedDomains.join(',')}`,
+      );
+      return this.redirect(ctx, `${frontend}/login?error=wrong_domain`);
+    }
+
     // Find / create the local user. The `_systemTransition` flag is set
     // inline here (never from request input) — Microsoft is the trust
     // boundary, so users.findOrCreate doesn't need its own admin gate but
