@@ -216,11 +216,31 @@ export default class UsersService extends moleculer.Service {
       throw new Errors.MoleculerClientError('Naudotojas nerastas.', 404, 'NOT_FOUND');
     }
     const user = this.normalizeUserRow(rows[0]);
+    // knexSnakeCaseMappers: rows come back camelCased; pass camelCase identifiers in.
     const assignments = await db('user_room_assignments')
-      .where({ user_id: userId })
-      .select('room_id');
-    const allowedRoomIds = assignments.map((a: any) => a.room_id);
+      .where({ userId })
+      .select('roomId');
+    const allowedRoomIds = assignments.map((a: any) => a.roomId);
     return { ...user, allowedRoomIds };
+  }
+
+  /**
+   * Admin-only: single hydrated user (includes allowedRoomIds). Used by
+   * AdminUserDetailPage.
+   */
+  @Action({
+    rest: 'GET /:id',
+    auth: true,
+    types: [EndpointType.ADMIN],
+    params: { id: { type: 'string', min: 1 } },
+  })
+  async getUser(ctx: Context<{ id: string }, UserAuthMeta>) {
+    requireAdminHook(ctx);
+    const user = await this.hydrateUser(ctx.params.id);
+    if (!user) {
+      throw new Errors.MoleculerClientError('Naudotojas nerastas.', 404, 'NOT_FOUND');
+    }
+    return user;
   }
 
   /**
