@@ -281,8 +281,25 @@ export default class UsersService extends moleculer.Service {
       .limit(limit)
       .offset(offset);
 
+    // Bulk-fetch room assignments for just the page we're returning, so the
+    // admin list shows per-user rooms count + ids without N+1 queries.
+    const userIds = rows.map((r: any) => r.id);
+    const assignments: Array<{ userId: string; roomId: string }> =
+      userIds.length > 0
+        ? await db('user_room_assignments').whereIn('userId', userIds).select('userId', 'roomId')
+        : [];
+    const byUser = new Map<string, string[]>();
+    for (const a of assignments) {
+      const list = byUser.get(a.userId) ?? [];
+      list.push(a.roomId);
+      byUser.set(a.userId, list);
+    }
+
     return {
-      items: rows.map((r: any) => this.normalizeUserRow(r)),
+      items: rows.map((r: any) => ({
+        ...this.normalizeUserRow(r),
+        allowedRoomIds: byUser.get(r.id) ?? [],
+      })),
       total: Number(count),
     };
   }
