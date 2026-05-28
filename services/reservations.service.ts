@@ -437,7 +437,8 @@ export default class ReservationsService extends moleculer.Service {
     }
     const reservation = rows[0];
 
-    const isOwner = String(reservation.user_id) === String(ctx.meta.user.id);
+    // knexSnakeCaseMappers: row columns come back camelCased.
+    const isOwner = String(reservation.userId) === String(ctx.meta.user.id);
     const isAdmin = ctx.meta.user.role === UserRole.ADMIN;
     if (!isOwner && !isAdmin) {
       throw new Errors.MoleculerClientError(
@@ -449,10 +450,11 @@ export default class ReservationsService extends moleculer.Service {
 
     // Past reservations are immutable — both for users (would orphan their
     // own history) and admins (audit-log substitute).
-    const [{ is_past: isPast }] = await db
-      .raw<{ rows: any[] }>("SELECT (?::date < CURRENT_DATE) AS is_past", [reservation.date])
-      .then((res: any) => res.rows);
-    if (isPast) {
+    const pastCheck = await db.raw<{ rows: Array<{ is_past: boolean }> }>(
+      "SELECT (?::date < CURRENT_DATE) AS is_past",
+      [reservation.date],
+    );
+    if (pastCheck.rows[0]?.is_past) {
       throw new Errors.MoleculerClientError(
         'Negalima atšaukti praėjusios rezervacijos',
         400,
@@ -465,9 +467,9 @@ export default class ReservationsService extends moleculer.Service {
     const action = isOwner ? 'CANCEL' : 'ADMIN_CANCEL_RESERVATION';
     await this.safeAuditLog(ctx, action, {
       reservationId: reservation.id,
-      ownerId: reservation.user_id,
-      roomId: reservation.room_id,
-      deskNumber: reservation.desk_number,
+      ownerId: reservation.userId,
+      roomId: reservation.roomId,
+      deskNumber: reservation.deskNumber,
       date: reservation.date,
     });
 
