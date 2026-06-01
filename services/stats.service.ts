@@ -38,7 +38,9 @@ export default class StatsService extends moleculer.Service {
   @Action({
     rest: 'GET /',
     auth: true,
-    types: [EndpointType.ADMIN],
+    // Apžvalga (per-floor occupancy) is available to every authenticated
+    // user — it shows only aggregate desk counts, no per-person PII.
+    types: [EndpointType.USER],
     params: {
       date: { type: 'string', pattern: DATE_PATTERN },
     },
