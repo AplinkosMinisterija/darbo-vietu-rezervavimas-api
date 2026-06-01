@@ -338,7 +338,7 @@ export default class ReservationsService extends moleculer.Service {
     // 3. Desk number in range.
     if (ctx.params.deskNumber > room.desk_count) {
       throw new Errors.MoleculerClientError(
-        'Tokio stalo nėra',
+        'Tokios darbo vietos nėra',
         400,
         'INVALID_DESK_NUMBER',
       );
@@ -400,13 +400,13 @@ export default class ReservationsService extends moleculer.Service {
         }
         if (c.includes('room_desk_date')) {
           throw new Errors.MoleculerClientError(
-            'Šis stalas tą dieną jau rezervuotas',
+            'Ši darbo vieta tą dieną jau rezervuota',
             409,
             'DESK_TAKEN',
           );
         }
         throw new Errors.MoleculerClientError(
-          'Šis stalas tą dieną jau rezervuotas',
+          'Ši darbo vieta tą dieną jau rezervuota',
           409,
           'DESK_TAKEN',
         );

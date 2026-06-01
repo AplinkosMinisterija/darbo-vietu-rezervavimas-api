@@ -252,7 +252,7 @@ export default class RoomsService extends moleculer.Service {
         const lo = Math.min(...orphans.map((r: any) => Number(r.deskNumber)));
         const hi = Math.max(...orphans.map((r: any) => Number(r.deskNumber)));
         throw new Errors.MoleculerClientError(
-          `Stalai ${lo}..${hi} turi būsimas rezervacijas, atšaukite prieš mažinant`,
+          `Darbo vietos ${lo}..${hi} turi būsimas rezervacijas, atšaukite prieš mažinant`,
           409,
           'DESK_HAS_FUTURE_RESERVATIONS',
         );
