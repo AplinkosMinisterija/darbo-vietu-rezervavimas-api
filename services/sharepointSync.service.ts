@@ -75,6 +75,8 @@ interface SyncReport {
   unmatched: string[];
   usersWithoutRoom: string[];
   perUser: Array<{ email: string; displayName: string; room: string; dates: string[] }>;
+  /** Set when the run was skipped because another run was in progress. */
+  skipped?: boolean;
 }
 
 /**
@@ -110,6 +112,11 @@ interface SyncReport {
   ],
 })
 export default class SharePointSyncService extends moleculer.Service {
+  /** Overlap guard: prevents the weekly cron and a manual `runNow` (or two
+   *  manual runs) from executing concurrently. The DB unique constraints make
+   *  overlap data-safe; this just keeps the report counters accurate. */
+  running = false;
+
   // --- admin actions ---
 
   /**
@@ -163,6 +170,33 @@ export default class SharePointSyncService extends moleculer.Service {
   @Method
   async runSync(trigger: string, actorId?: string): Promise<SyncReport> {
     const dates = upcomingWeekdays(new Date());
+    const emptyReport: SyncReport = {
+      trigger,
+      targetWeek: { from: dates[0], to: dates[4] },
+      sharePointPeople: 0,
+      matchedUsers: 0,
+      reservationsCreated: 0,
+      skippedExisting: 0,
+      skippedNoDesk: 0,
+      unmatched: [],
+      usersWithoutRoom: [],
+      perUser: [],
+    };
+
+    if (this.running) {
+      this.logger.warn('[sharepointSync] run skipped — a previous run is still in progress.');
+      return { ...emptyReport, skipped: true };
+    }
+    this.running = true;
+    try {
+      return await this.runSyncInner(trigger, actorId, dates);
+    } finally {
+      this.running = false;
+    }
+  }
+
+  @Method
+  async runSyncInner(trigger: string, actorId: string | undefined, dates: string[]): Promise<SyncReport> {
     this.logger.info(`[sharepointSync] run (${trigger}) — target week ${dates[0]}..${dates[4]}`);
 
     const people: OnSitePerson[] = await fetchOnSiteOnlyEmployees();
