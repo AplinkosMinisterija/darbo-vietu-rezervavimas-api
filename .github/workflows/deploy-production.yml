@@ -15,4 +15,4 @@ jobs:
     with:
       environment: Production
       enable-sentry: false
-      docker-image: ghcr.io/AplinkosMinisterija/stalu-rezervavimas-api
+      docker-image: ghcr.io/AplinkosMinisterija/darbo-vietu-rezervavimas-api

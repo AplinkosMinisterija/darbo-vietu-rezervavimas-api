@@ -13,7 +13,7 @@ jobs:
       contents: read
       packages: write
     with:
-      docker-image: ghcr.io/aplinkosministerija/stalu-rezervavimas-api
+      docker-image: ghcr.io/aplinkosministerija/darbo-vietu-rezervavimas-api
       environment: development
       runs-on: ubuntu-latest
       latest-tag: true
