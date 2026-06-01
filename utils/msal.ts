@@ -52,7 +52,7 @@ export function getRedirectUri(): string {
   const uri = (process.env.OUTLOOK_REDIRECT_URI || '').trim();
   if (!uri) {
     throw new Error(
-      'OUTLOOK_REDIRECT_URI env var must be set (e.g. https://stalu-rezervavimas.biip.lt/api/auth/outlook/callback).',
+      'OUTLOOK_REDIRECT_URI env var must be set (e.g. https://darbo-vietu-rezervavimas.biip.lt/api/auth/outlook/callback).',
     );
   }
   return uri;

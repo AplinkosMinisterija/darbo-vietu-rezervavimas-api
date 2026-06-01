@@ -1,9 +1,9 @@
 {
-  "name": "stalu-rezervavimas-api",
+  "name": "darbo-vietu-rezervavimas-api",
   "version": "0.1.0",
   "private": true,
-  "description": "Stalų rezervavimo sistema (Moleculer.js API)",
-  "repository": "github:AplinkosMinisterija/stalu-rezervavimas-api",
+  "description": "Darbo vietų rezervavimo sistema (Moleculer.js API)",
+  "repository": "github:AplinkosMinisterija/darbo-vietu-rezervavimas-api",
   "license": "UNLICENSED",
   "scripts": {
     "db:migrate": "knex migrate:latest",
@@ -17,6 +17,7 @@
   "dependencies": {
     "@azure/msal-node": "^2.16.0",
     "@moleculer/database": "github:ambrazasp/moleculerjs-database",
+    "@r2d2bzh/moleculer-cron": "^0.1.4",
     "@sentry/node": "^7.60.1",
     "bcryptjs": "^3.0.3",
     "cookie": "^0.6.0",
