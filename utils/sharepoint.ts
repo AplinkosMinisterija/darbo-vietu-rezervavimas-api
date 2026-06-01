@@ -135,9 +135,12 @@ async function findListId(token: string, siteId: string, displayName: string): P
  * template ("userInformation") with a "users" name fallback.
  */
 async function findUserInfoListId(token: string, siteId: string): Promise<string | null> {
+  // The User Information List is a HIDDEN system list. Graph's /lists omits
+  // hidden system lists UNLESS the `system` facet is selected — without it the
+  // list is absent from the response and person lookups can't be resolved.
   const lists = await graphGetAll(
     token,
-    `${GRAPH}/sites/${siteId}/lists?$select=name,displayName,id,list&$top=200`,
+    `${GRAPH}/sites/${siteId}/lists?$select=name,displayName,id,list,system&$top=200`,
   );
   const match = lists.find(
     (l) => (l.list && l.list.template === 'userInformation') || l.name === 'users',
