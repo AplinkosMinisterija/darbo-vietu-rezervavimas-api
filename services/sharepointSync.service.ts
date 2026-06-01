@@ -28,6 +28,38 @@ function localPart(email: string | null | undefined): string | null {
   return lp || null;
 }
 
+/**
+ * Normalized full name for fallback matching when a SharePoint person has no
+ * email: strip diacritics, drop parenthetical maiden names, keep letters,
+ * sort tokens so word order ("Vardas Pavardė" vs "Pavardė Vardas") doesn't
+ * matter. Returns null for empty/unusable input.
+ */
+function normalizeName(s: string | null | undefined): string | null {
+  if (!s) return null;
+  const n = s
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .sort()
+    .join(' ');
+  return n || null;
+}
+
+interface DbUser {
+  id: string;
+  email: string;
+  displayName: string;
+}
+
+interface UserIndex {
+  byLocal: Map<string, DbUser>;
+  byName: Map<string, DbUser>;
+}
+
 function ymd(d: Date): string {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, '0');
@@ -144,15 +176,16 @@ export default class SharePointSyncService extends moleculer.Service {
       return { configured: false };
     }
     const people = await fetchOnSiteOnlyEmployees();
-    const byLocal = await this.buildUserIndex();
+    const idx = await this.buildUserIndex();
     const rows = people.map((p) => {
-      const lp = localPart(p.email);
-      const user = lp ? byLocal.get(lp) : undefined;
+      const user = this.matchPerson(p, idx);
       return {
         name: p.name,
         email: p.email,
         matched: Boolean(user),
+        matchedBy: user ? (localPart(p.email) && idx.byLocal.get(localPart(p.email)!) ? 'email' : 'name') : null,
         dbUserId: user?.id ?? null,
+        dbEmail: user?.email ?? null,
       };
     });
     const d = upcomingWeekdays(new Date());
@@ -200,7 +233,7 @@ export default class SharePointSyncService extends moleculer.Service {
     this.logger.info(`[sharepointSync] run (${trigger}) — target week ${dates[0]}..${dates[4]}`);
 
     const people: OnSitePerson[] = await fetchOnSiteOnlyEmployees();
-    const byLocal = await this.buildUserIndex();
+    const idx = await this.buildUserIndex();
 
     const report: SyncReport = {
       trigger,
@@ -216,8 +249,7 @@ export default class SharePointSyncService extends moleculer.Service {
     };
 
     for (const person of people) {
-      const lp = localPart(person.email);
-      const user = lp ? byLocal.get(lp) : undefined;
+      const user = this.matchPerson(person, idx);
       if (!user) {
         report.unmatched.push(person.email || person.name || '(unknown)');
         continue;
@@ -272,20 +304,35 @@ export default class SharePointSyncService extends moleculer.Service {
     return report;
   }
 
-  /** localPart(email) -> { id, email, displayName } for every DB user. */
+  /** DB user lookup indexes: by email local-part (primary) and by normalized
+   *  full name (fallback). First-wins on collisions. */
   @Method
-  async buildUserIndex(): Promise<Map<string, { id: string; email: string; displayName: string }>> {
+  async buildUserIndex(): Promise<UserIndex> {
     const rows = await db('users').select('id', 'email', 'displayName');
-    const byLocal = new Map<string, { id: string; email: string; displayName: string }>();
+    const byLocal = new Map<string, DbUser>();
+    const byName = new Map<string, DbUser>();
     for (const u of rows as any[]) {
+      const user: DbUser = { id: u.id, email: u.email, displayName: u.displayName };
       const lp = localPart(u.email);
-      // First-wins on collisions; local-part collisions aren't expected within
-      // a single @am.lt tenant.
-      if (lp && !byLocal.has(lp)) {
-        byLocal.set(lp, { id: u.id, email: u.email, displayName: u.displayName });
-      }
+      if (lp && !byLocal.has(lp)) byLocal.set(lp, user);
+      const nm = normalizeName(u.displayName);
+      if (nm && !byName.has(nm)) byName.set(nm, user);
     }
-    return byLocal;
+    return { byLocal, byName };
+  }
+
+  /**
+   * Matches a SharePoint person to a DB user: by email local-part first
+   * (authoritative — both sides are firstname.lastname@…), then by normalized
+   * full name only when no email is available.
+   */
+  @Method
+  matchPerson(person: OnSitePerson, idx: UserIndex): DbUser | undefined {
+    const lp = localPart(person.email);
+    const byEmail = lp ? idx.byLocal.get(lp) : undefined;
+    if (byEmail) return byEmail;
+    const nm = normalizeName(person.name);
+    return nm ? idx.byName.get(nm) : undefined;
   }
 
   /**
