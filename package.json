@@ -10,6 +10,7 @@
     "db:rollback": "knex migrate:rollback",
     "db:seed": "knex seed:run",
     "build": "tsc --build tsconfig.json",
+    "test": "vitest run",
     "dev": "yarn db:migrate && ts-node ./node_modules/moleculer/bin/moleculer-runner.js --env --hot --repl --config moleculer.config.ts services/**/*.service.ts",
     "start": "knex migrate:latest --knexfile /app/dist/knexfile.js && knex seed:run --knexfile /app/dist/knexfile.js && cd /app/dist && SERVICEDIR=/app/dist/services node /app/node_modules/moleculer/bin/moleculer-runner.js --config /app/dist/moleculer.config.js",
     "lint": "eslint --ext .js,.ts ."
@@ -22,6 +23,7 @@
     "bcryptjs": "^3.0.3",
     "cookie": "^0.6.0",
     "dotenv": "^16.0.0",
+    "exceljs": "^4.4.0",
     "jsonwebtoken": "^9.0.0",
     "knex": "^2.5.1",
     "lodash": "^4.17.21",
