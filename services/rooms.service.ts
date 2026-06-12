@@ -48,7 +48,7 @@ function normalizeRoomRow(row: any) {
       id: { type: 'string', primaryKey: true, columnType: 'uuid', readonly: true },
       number: { type: 'string', required: true },
       name: { type: 'string', required: true },
-      floor: { type: 'number', integer: true, min: 1, max: 10, required: true },
+      floor: { type: 'number', integer: true, min: 0, max: 10, required: true },
       deskCount: {
         type: 'number',
         integer: true,
@@ -154,7 +154,7 @@ export default class RoomsService extends moleculer.Service {
     params: {
       number: { type: 'string', min: 1, max: 32 },
       name: { type: 'string', min: 1, max: 200 },
-      floor: { type: 'number', integer: true, convert: true, min: 1, max: 10 },
+      floor: { type: 'number', integer: true, convert: true, min: 0, max: 10 },
       deskCount: { type: 'number', integer: true, convert: true, min: 0 },
       isShared: { type: 'boolean', convert: true, optional: true, default: false },
     },
@@ -213,7 +213,7 @@ export default class RoomsService extends moleculer.Service {
       id: 'string',
       number: { type: 'string', min: 1, max: 32, optional: true },
       name: { type: 'string', min: 1, max: 200, optional: true },
-      floor: { type: 'number', integer: true, convert: true, min: 1, max: 10, optional: true },
+      floor: { type: 'number', integer: true, convert: true, min: 0, max: 10, optional: true },
       deskCount: { type: 'number', integer: true, convert: true, min: 0, optional: true },
       isShared: { type: 'boolean', convert: true, optional: true },
     },
