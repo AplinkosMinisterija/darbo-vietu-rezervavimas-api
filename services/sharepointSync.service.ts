@@ -15,6 +15,10 @@ import {
 
 const db = knex(knexConfig);
 
+/** Settings key gating the weekly auto-reservation cron. Absent → ON (so the
+ *  prior always-on behavior is preserved until an admin toggles it off). */
+const AUTO_RESERVE_SETTING_KEY = 'sharepoint_auto_reserve_enabled';
+
 interface UserAuthMeta {
   user?: AuthUser;
   _systemTransition?: boolean;
@@ -134,6 +138,11 @@ interface SyncReport {
       timeZone: 'Europe/Vilnius',
       async onTick(this: any) {
         if (!isSharePointConfigured()) return;
+        // Admin kill-switch: skip the weekly run when auto-reserve is disabled.
+        if (!(await this.isAutoReserveEnabled())) {
+          this.logger.info('[sharepointSync] cron skipped — auto-reserve disabled by admin.');
+          return;
+        }
         try {
           await this.runSync('cron');
         } catch (err: any) {
@@ -196,6 +205,63 @@ export default class SharePointSyncService extends moleculer.Service {
       targetWeek: { from: d[0], to: d[4] },
       people: rows,
     };
+  }
+
+  /**
+   * Admin: current integration state — whether the weekly auto-reserve cron is
+   * enabled (admin kill-switch) and whether SharePoint env is configured at all.
+   */
+  @Action({ rest: 'GET /status', auth: true, types: [EndpointType.ADMIN] })
+  async status(ctx: Context<{}, UserAuthMeta>) {
+    requireAdminHook(ctx);
+    return {
+      enabled: await this.isAutoReserveEnabled(),
+      configured: isSharePointConfigured(),
+    };
+  }
+
+  /**
+   * Admin: enable/disable the weekly auto-reserve cron. Persisted in `settings`
+   * so it survives restarts. Does not touch the manual `runNow` action — an
+   * admin can still trigger a one-off run on demand.
+   */
+  @Action({
+    rest: 'POST /enabled',
+    auth: true,
+    types: [EndpointType.ADMIN],
+    params: { enabled: { type: 'boolean', convert: true } },
+  })
+  async setEnabled(ctx: Context<{ enabled: boolean }, UserAuthMeta>) {
+    requireAdminHook(ctx);
+    await this.setAutoReserveEnabled(ctx.params.enabled);
+    await this.safeAuditLog(ctx.meta?.user?.id, 'SHAREPOINT_AUTO_RESERVE_TOGGLED', {
+      enabled: ctx.params.enabled,
+    });
+    return { enabled: ctx.params.enabled, configured: isSharePointConfigured() };
+  }
+
+  // --- settings (kill-switch) ---
+
+  /** Reads the persisted flag; absent → true (auto-reserve on by default). */
+  @Method
+  async isAutoReserveEnabled(): Promise<boolean> {
+    const rows = await db('settings').where({ key: AUTO_RESERVE_SETTING_KEY }).limit(1);
+    if (rows.length === 0) return true;
+    const v = rows[0].value;
+    return v === true || v === 'true';
+  }
+
+  @Method
+  async setAutoReserveEnabled(enabled: boolean): Promise<void> {
+    const json = JSON.stringify(Boolean(enabled));
+    await db('settings')
+      .insert({
+        key: AUTO_RESERVE_SETTING_KEY,
+        value: db.raw('?::jsonb', [json]),
+        updated_at: db.fn.now(),
+      })
+      .onConflict('key')
+      .merge();
   }
 
   // --- core ---
