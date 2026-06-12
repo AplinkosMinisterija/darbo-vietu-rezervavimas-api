@@ -278,6 +278,118 @@ export default class ReservationsService extends moleculer.Service {
   }
 
   /**
+   * Admin: assign a reservation to ANY user (admin override). Unlike the
+   * user-facing create, this does NOT require the target user to have room
+   * access — an admin can place anyone in any room/desk. Physical constraints
+   * still hold: the room/user must exist, the date can't be in the past, the
+   * desk must be within the room's desk_count, and the DB uniques (one desk
+   * per date, one reservation per user per date) translate to clean 409s.
+   */
+  @Action({
+    rest: 'POST /assign',
+    auth: true,
+    types: [EndpointType.ADMIN],
+    params: {
+      userId: { type: 'uuid' },
+      roomId: { type: 'uuid' },
+      deskNumber: { type: 'number', integer: true, convert: true, min: 1 },
+      date: { type: 'string', pattern: DATE_PATTERN },
+    },
+  })
+  async adminAssign(
+    ctx: Context<
+      { userId: string; roomId: string; deskNumber: number; date: string },
+      UserAuthMeta
+    >,
+  ) {
+    requireAdminHook(ctx);
+
+    const userRows = await db('users')
+      .where({ id: ctx.params.userId })
+      .whereNull('deleted_at')
+      .limit(1);
+    if (userRows.length === 0) {
+      throw new Errors.MoleculerClientError('Naudotojas nerastas.', 404, 'USER_NOT_FOUND');
+    }
+    const user = userRows[0];
+
+    const roomRows = await db('rooms')
+      .where({ id: ctx.params.roomId })
+      .whereNull('deleted_at')
+      .limit(1);
+    if (roomRows.length === 0) {
+      throw new Errors.MoleculerClientError('Patalpa nerasta.', 404, 'ROOM_NOT_FOUND');
+    }
+    const room = roomRows[0];
+
+    // Date not in the past (compared against PG CURRENT_DATE, same as the
+    // user-facing create — avoids client/server timezone skew).
+    const [{ is_past: isPast }] = await db
+      .raw<{ rows: any[] }>('SELECT (?::date < CURRENT_DATE) AS is_past', [ctx.params.date])
+      .then((res: any) => res.rows);
+    if (isPast) {
+      throw new Errors.MoleculerClientError(
+        'Negalima rezervuoti praėjusiai datai',
+        400,
+        'DATE_IN_PAST',
+      );
+    }
+
+    // Desk within range (knexSnakeCaseMappers → camelCase: room.deskCount).
+    if (ctx.params.deskNumber > room.deskCount) {
+      throw new Errors.MoleculerClientError('Tokios darbo vietos nėra', 400, 'INVALID_DESK_NUMBER');
+    }
+
+    try {
+      const [created] = await db('reservations')
+        .insert({
+          user_id: ctx.params.userId,
+          room_id: ctx.params.roomId,
+          desk_number: ctx.params.deskNumber,
+          date: ctx.params.date,
+        })
+        .returning('*');
+
+      await this.safeAuditLog(ctx, 'ADMIN_ASSIGN_RESERVATION', {
+        reservationId: created.id,
+        targetUserId: ctx.params.userId,
+        roomId: ctx.params.roomId,
+        deskNumber: ctx.params.deskNumber,
+        date: ctx.params.date,
+      });
+
+      // Shape mirrors projectAdminReservation so the FE can drop it straight
+      // into the admin list.
+      return {
+        id: created.id,
+        roomId: created.roomId,
+        deskNumber: created.deskNumber,
+        date: ymd(created.date),
+        user: { id: user.id, displayName: user.displayName, email: user.email },
+        room: { number: room.number, name: room.name, floor: room.floor },
+        createdAt: created.createdAt,
+      };
+    } catch (err: any) {
+      if (err?.code === '23505') {
+        const c: string = err.constraint || '';
+        if (c.includes('user_date')) {
+          throw new Errors.MoleculerClientError(
+            'Šis naudotojas jau turi rezervaciją tai dienai',
+            409,
+            'USER_HAS_RESERVATION',
+          );
+        }
+        throw new Errors.MoleculerClientError(
+          'Ši darbo vieta tą dieną jau rezervuota',
+          409,
+          'DESK_TAKEN',
+        );
+      }
+      throw err;
+    }
+  }
+
+  /**
    * User-facing create. Validation flow:
    *
    *   1. Room exists + not soft-deleted (404).
