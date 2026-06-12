@@ -129,8 +129,10 @@ export interface UserAuthMeta {
       // passed straight to `res.writeHead()` and throw ERR_HTTP_INVALID_STATUS_CODE,
       // crashing the process. Coerce anything that isn't a valid HTTP code to 500.
       const rawCode = err.code;
+      // Lower bound 200, not 100: a 1xx status with a JSON error body is
+      // malformed, and no error path here legitimately produces one.
       const status =
-        typeof rawCode === 'number' && rawCode >= 100 && rawCode <= 599 ? rawCode : 500;
+        typeof rawCode === 'number' && rawCode >= 200 && rawCode <= 599 ? rawCode : 500;
       const isServerError = status >= 500;
       const safeMessage =
         isProd && isServerError
