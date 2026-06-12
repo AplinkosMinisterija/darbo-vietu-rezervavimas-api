@@ -308,7 +308,8 @@ export default class SharePointSyncService extends moleculer.Service {
    *  full name (fallback). First-wins on collisions. */
   @Method
   async buildUserIndex(): Promise<UserIndex> {
-    const rows = await db('users').select('id', 'email', 'displayName');
+    // Soft-deleted users must not receive auto-reservations.
+    const rows = await db('users').whereNull('deleted_at').select('id', 'email', 'displayName');
     const byLocal = new Map<string, DbUser>();
     const byName = new Map<string, DbUser>();
     for (const u of rows as any[]) {

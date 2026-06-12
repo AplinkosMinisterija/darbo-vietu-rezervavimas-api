@@ -47,6 +47,9 @@ export const SELF_USER_FIELDS = ['id', 'msObjectId', 'email', 'displayName', 'ro
       },
       createdAt: { type: 'date', columnName: 'created_at', readonly: true },
       updatedAt: { type: 'date', columnName: 'updated_at', readonly: true },
+      // Soft-delete marker. Set by `deleteUser`; every read path filters
+      // `WHERE deleted_at IS NULL`. Hidden from the default projection.
+      deletedAt: { type: 'date', columnName: 'deleted_at', readonly: true, hidden: 'byDefault' },
     },
   },
   hooks: {
@@ -149,6 +152,11 @@ export default class UsersService extends moleculer.Service {
       if (ctx.params.displayName && existing.displayName !== ctx.params.displayName) {
         updatePayload.display_name = ctx.params.displayName;
       }
+      // Reactivation: an admin previously soft-deleted this person, but they
+      // still have valid SSO access and are logging in — restore the account.
+      if (existing.deletedAt) {
+        updatePayload.deleted_at = null;
+      }
       if (Object.keys(updatePayload).length > 0) {
         updatePayload.updated_at = db.fn.now();
         const [updated] = await db('users')
@@ -192,7 +200,10 @@ export default class UsersService extends moleculer.Service {
         'INTERNAL_ONLY',
       );
     }
-    const rows = await db('users').where({ id: ctx.params.id }).limit(1);
+    const rows = await db('users')
+      .where({ id: ctx.params.id })
+      .whereNull('deleted_at')
+      .limit(1);
     if (rows.length === 0) return null;
     return this.normalizeUserRow(rows[0]);
   }
@@ -211,7 +222,7 @@ export default class UsersService extends moleculer.Service {
       throw new Errors.MoleculerClientError('Neprisijungta.', 401, 'NOT_AUTHENTICATED');
     }
     const userId = ctx.meta.user.id;
-    const rows = await db('users').where({ id: userId }).limit(1);
+    const rows = await db('users').where({ id: userId }).whereNull('deleted_at').limit(1);
     if (rows.length === 0) {
       throw new Errors.MoleculerClientError('Naudotojas nerastas.', 404, 'NOT_FOUND');
     }
@@ -264,7 +275,7 @@ export default class UsersService extends moleculer.Service {
     const offset = ctx.params.offset ?? 0;
     const q = (ctx.params.q || '').trim();
 
-    const baseQuery = db('users');
+    const baseQuery = db('users').whereNull('deleted_at');
     if (q.length > 0) {
       const pattern = `%${q.replace(/[%_]/g, (m) => `\\${m}`)}%`;
       baseQuery.where((b) => {
@@ -396,6 +407,140 @@ export default class UsersService extends moleculer.Service {
     return this.hydrateUser(targetUserId);
   }
 
+  /**
+   * Admin-only: edit a user's identity fields (display name + email).
+   *
+   * Email is `citext` + globally unique — a collision (case-insensitive)
+   * surfaces as PG `23505`, translated into a clean 409 `EMAIL_TAKEN`.
+   * Role and room assignments have their own dedicated endpoints; this one
+   * only touches `display_name` / `email`.
+   */
+  @Action({
+    rest: 'PUT /:id',
+    auth: true,
+    types: [EndpointType.ADMIN],
+    params: {
+      id: 'string',
+      displayName: { type: 'string', min: 1, max: 200, trim: true, optional: true },
+      email: { type: 'email', max: 200, optional: true },
+    },
+  })
+  async updateUser(
+    ctx: Context<{ id: string; displayName?: string; email?: string }, UserAuthMeta>,
+  ) {
+    requireAdminHook(ctx);
+    const targetUserId = ctx.params.id;
+
+    const userRows = await db('users')
+      .where({ id: targetUserId })
+      .whereNull('deleted_at')
+      .limit(1);
+    if (userRows.length === 0) {
+      throw new Errors.MoleculerClientError('Naudotojas nerastas.', 404, 'USER_NOT_FOUND');
+    }
+
+    const updatePayload: any = {};
+    if (ctx.params.displayName !== undefined) {
+      const name = ctx.params.displayName.trim();
+      if (name.length === 0) {
+        throw new Errors.MoleculerClientError('Vardas negali būti tuščias.', 422, 'NAME_REQUIRED');
+      }
+      updatePayload.display_name = name;
+    }
+    if (ctx.params.email !== undefined) {
+      updatePayload.email = ctx.params.email.trim();
+    }
+
+    // Nothing actually changed → return the current row without a write.
+    if (Object.keys(updatePayload).length === 0) {
+      return this.hydrateUser(targetUserId);
+    }
+
+    updatePayload.updated_at = db.fn.now();
+
+    try {
+      await db('users').where({ id: targetUserId }).update(updatePayload);
+    } catch (err: any) {
+      if (err?.code === '23505') {
+        throw new Errors.MoleculerClientError(
+          'Toks el. paštas jau naudojamas.',
+          409,
+          'EMAIL_TAKEN',
+        );
+      }
+      throw err;
+    }
+
+    await this.safeAuditLog(ctx, 'ADMIN_UPDATE_USER', {
+      userId: targetUserId,
+      changes: {
+        displayName: ctx.params.displayName,
+        email: ctx.params.email,
+      },
+    });
+
+    return this.hydrateUser(targetUserId);
+  }
+
+  /**
+   * Admin-only: soft-delete a user.
+   *
+   * Sets `deleted_at` (the row survives so reservation history + audit log
+   * stay intact — reservations.user_id is ON DELETE RESTRICT). The user's
+   * FUTURE reservations are cancelled in the same transaction so their desks
+   * free up immediately; past reservations are kept for history. Room
+   * assignments are left in place so a re-login (which reactivates the
+   * account, see `findOrCreate`) restores the prior access.
+   *
+   * Self-delete guard: an admin cannot delete their own account — mirrors the
+   * self-demotion guard in `setRole` and avoids an accidental lock-out.
+   */
+  @Action({
+    rest: 'DELETE /:id',
+    auth: true,
+    types: [EndpointType.ADMIN],
+    params: { id: 'string' },
+  })
+  async deleteUser(ctx: Context<{ id: string }, UserAuthMeta>) {
+    requireAdminHook(ctx);
+    const targetUserId = ctx.params.id;
+
+    if (ctx.meta?.user?.id === targetUserId) {
+      throw new Errors.MoleculerClientError(
+        'Negalima ištrinti savo paskyros.',
+        403,
+        'SELF_DELETE_FORBIDDEN',
+      );
+    }
+
+    const userRows = await db('users')
+      .where({ id: targetUserId })
+      .whereNull('deleted_at')
+      .limit(1);
+    if (userRows.length === 0) {
+      throw new Errors.MoleculerClientError('Naudotojas nerastas.', 404, 'USER_NOT_FOUND');
+    }
+
+    let futureReservationsRemoved = 0;
+    await db.transaction(async (trx) => {
+      futureReservationsRemoved = await trx('reservations')
+        .where({ user_id: targetUserId })
+        .andWhere('date', '>=', trx.raw('CURRENT_DATE'))
+        .delete();
+
+      await trx('users')
+        .where({ id: targetUserId })
+        .update({ deleted_at: trx.fn.now(), updated_at: trx.fn.now() });
+    });
+
+    await this.safeAuditLog(ctx, 'ADMIN_DELETE_USER', {
+      userId: targetUserId,
+      futureReservationsRemoved,
+    });
+
+    return { ok: true, futureReservationsRemoved };
+  }
+
   // --- private helpers ---
 
   @Method
@@ -415,7 +560,7 @@ export default class UsersService extends moleculer.Service {
 
   @Method
   async hydrateUser(id: string) {
-    const rows = await db('users').where({ id }).limit(1);
+    const rows = await db('users').where({ id }).whereNull('deleted_at').limit(1);
     if (rows.length === 0) return null;
     const user = this.normalizeUserRow(rows[0]);
     // knexSnakeCaseMappers: pass camelCase column names; rows come back camelCased.

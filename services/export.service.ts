@@ -31,6 +31,7 @@ export interface UserRow {
   email: string;
   displayName: string;
   role: string;
+  deletedAt: Date | string | null;
   createdAt: Date | string | null;
 }
 
@@ -56,9 +57,9 @@ export interface AssignmentRow {
  * workbook. No DB / no Moleculer context, so it's unit-testable in
  * isolation (see export.service.test.ts).
  *
- * Soft-deleted rooms are excluded from the "Patalpos" listing, but kept in
- * the lookup map so an assignment still pointing at a deleted room resolves
- * to a readable label instead of a blank cell.
+ * Soft-deleted rooms/users are excluded from their respective listings, but
+ * kept in the lookup maps so an assignment still pointing at a deleted room
+ * or user resolves to a readable label instead of a blank cell.
  */
 export function buildExportWorkbook(
   users: UserRow[],
@@ -96,6 +97,7 @@ export function buildExportWorkbook(
     { header: 'Patalpos (nr.)', key: 'roomNumbers', width: 40 },
   ];
   for (const u of users) {
+    if (u.deletedAt) continue; // listing = active users only
     const roomNumbers = roomsByUser.get(u.id) ?? [];
     usersSheet.addRow({
       displayName: u.displayName,

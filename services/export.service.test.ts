@@ -8,9 +8,12 @@ import {
 } from './export.service';
 
 const users: UserRow[] = [
-  { id: 'u1', email: 'jonas@am.lt', displayName: 'Jonas Jonaitis', role: 'USER', createdAt: null },
-  { id: 'u2', email: 'admin@am.lt', displayName: 'Admina Admin', role: 'ADMIN', createdAt: null },
-  { id: 'u3', email: 'petras@am.lt', displayName: 'Petras Petraitis', role: 'USER', createdAt: null },
+  { id: 'u1', email: 'jonas@am.lt', displayName: 'Jonas Jonaitis', role: 'USER', deletedAt: null, createdAt: null },
+  { id: 'u2', email: 'admin@am.lt', displayName: 'Admina Admin', role: 'ADMIN', deletedAt: null, createdAt: null },
+  { id: 'u3', email: 'petras@am.lt', displayName: 'Petras Petraitis', role: 'USER', deletedAt: null, createdAt: null },
+  // soft-deleted — must NOT appear in the Vartotojai sheet, but its name must
+  // still resolve in the Priskyrimai sheet for the dangling assignment below.
+  { id: 'u4', email: 'ona@am.lt', displayName: 'Ona Ištrinta', role: 'USER', deletedAt: new Date(), createdAt: null },
 ];
 
 const rooms: RoomRow[] = [
@@ -26,6 +29,7 @@ const assignments: AssignmentRow[] = [
   { userId: 'u1', roomId: 'r1', createdAt: null },
   { userId: 'u3', roomId: 'r1', createdAt: null },
   { userId: 'u3', roomId: 'r3', createdAt: null }, // points at soft-deleted room
+  { userId: 'u4', roomId: 'r3', createdAt: null }, // soft-deleted user → soft-deleted room
 ];
 
 async function reload(wb: ExcelJS.Workbook): Promise<ExcelJS.Workbook> {
@@ -58,12 +62,15 @@ describe('buildExportWorkbook', () => {
       'Priskirta patalpų',
       'Patalpos (nr.)',
     ]);
-    // 1 header + 3 users
+    // 1 header + 3 ACTIVE users (u4 is soft-deleted → excluded)
     expect(sheet.rowCount).toBe(4);
     // Jonas (u1) has rooms r2(202) + r1(101) -> sorted numeric "101, 202"
     expect(rowValues(sheet, 2)).toEqual(['Jonas Jonaitis', 'jonas@am.lt', 'USER', 2, '101, 202']);
     // Admina (u2) has no rooms
     expect(rowValues(sheet, 3)).toEqual(['Admina Admin', 'admin@am.lt', 'ADMIN', 0, '']);
+    // Soft-deleted user must not appear anywhere in the listing.
+    const names = [2, 3, 4].map((n) => rowValues(sheet, n)[0]);
+    expect(names).not.toContain('Ona Ištrinta');
   });
 
   it('Patalpos sheet excludes soft-deleted rooms and counts assigned users', async () => {
@@ -83,12 +90,15 @@ describe('buildExportWorkbook', () => {
   it('Priskyrimai sheet has one row per assignment and resolves deleted room numbers', async () => {
     const wb = await reload(buildExportWorkbook(users, rooms, assignments));
     const sheet = wb.getWorksheet('Priskyrimai')!;
-    // 1 header + 4 assignments
-    expect(sheet.rowCount).toBe(5);
+    // 1 header + 5 assignments
+    expect(sheet.rowCount).toBe(6);
     // The dangling assignment (u3 -> r3 soft-deleted) still shows its number.
-    const allRows = [2, 3, 4, 5].map((n) => rowValues(sheet, n));
+    const allRows = [2, 3, 4, 5, 6].map((n) => rowValues(sheet, n));
     const petrasDeleted = allRows.find((r) => r[0] === 'Petras Petraitis' && r[2] === '303');
     expect(petrasDeleted).toEqual(['Petras Petraitis', 'petras@am.lt', '303', 'Trečias', 3]);
+    // A soft-deleted USER's assignment still resolves to their name + email.
+    const onaDeleted = allRows.find((r) => r[0] === 'Ona Ištrinta');
+    expect(onaDeleted).toEqual(['Ona Ištrinta', 'ona@am.lt', '303', 'Trečias', 3]);
   });
 
   it('handles empty data without throwing', async () => {

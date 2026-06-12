@@ -211,6 +211,7 @@ export default class RoomsService extends moleculer.Service {
     types: [EndpointType.ADMIN],
     params: {
       id: 'string',
+      number: { type: 'string', min: 1, max: 32, optional: true },
       name: { type: 'string', min: 1, max: 200, optional: true },
       floor: { type: 'number', integer: true, convert: true, min: 1, max: 10, optional: true },
       deskCount: { type: 'number', integer: true, convert: true, min: 0, optional: true },
@@ -221,6 +222,7 @@ export default class RoomsService extends moleculer.Service {
     ctx: Context<
       {
         id: string;
+        number?: string;
         name?: string;
         floor?: number;
         deskCount?: number;
@@ -260,19 +262,34 @@ export default class RoomsService extends moleculer.Service {
     }
 
     const updatePayload: any = { updated_at: db.fn.now() };
+    if (ctx.params.number !== undefined) updatePayload.number = ctx.params.number;
     if (ctx.params.name !== undefined) updatePayload.name = ctx.params.name;
     if (ctx.params.floor !== undefined) updatePayload.floor = ctx.params.floor;
     if (ctx.params.deskCount !== undefined) updatePayload.desk_count = ctx.params.deskCount;
     if (ctx.params.isShared !== undefined) updatePayload.is_shared = ctx.params.isShared;
 
-    const [updated] = await db('rooms')
-      .where({ id: ctx.params.id })
-      .update(updatePayload)
-      .returning('*');
+    let updated: any;
+    try {
+      [updated] = await db('rooms')
+        .where({ id: ctx.params.id })
+        .update(updatePayload)
+        .returning('*');
+    } catch (err: any) {
+      // `number` is uniquely indexed — a rename collision surfaces as 23505.
+      if (err?.code === '23505') {
+        throw new Errors.MoleculerClientError(
+          'Tokia patalpa jau registruota',
+          409,
+          'NUMBER_TAKEN',
+        );
+      }
+      throw err;
+    }
 
     await this.safeAuditLog(ctx, 'ADMIN_UPDATE_ROOM', {
       roomId: updated.id,
       changes: {
+        number: ctx.params.number,
         name: ctx.params.name,
         floor: ctx.params.floor,
         deskCount: ctx.params.deskCount,
