@@ -7,6 +7,7 @@ import DatabaseMixin from '../mixins/database.mixin';
 import knexConfig from '../knexfile';
 import { EndpointType, UserRole } from '../types/constants';
 import { requireAdminHook, AuthUser } from '../utils/auth';
+import { isRoomManager } from '../utils/roomAccess';
 
 const db = knex(knexConfig);
 
@@ -288,7 +289,8 @@ export default class ReservationsService extends moleculer.Service {
   @Action({
     rest: 'POST /assign',
     auth: true,
-    types: [EndpointType.ADMIN],
+    // USER-gated; handler enforces admin OR manager-of-(target room).
+    types: [EndpointType.USER],
     params: {
       userId: { type: 'uuid' },
       roomId: { type: 'uuid' },
@@ -302,7 +304,18 @@ export default class ReservationsService extends moleculer.Service {
       UserAuthMeta
     >,
   ) {
-    requireAdminHook(ctx);
+    // Only an admin or the target room's manager may assign reservations here.
+    const isAdmin = ctx.meta?._systemTransition === true || ctx.meta?.user?.role === UserRole.ADMIN;
+    if (!isAdmin) {
+      const uid = ctx.meta?.user?.id;
+      if (!uid || !(await isRoomManager(db, uid, ctx.params.roomId))) {
+        throw new Errors.MoleculerClientError(
+          'Rezervuoti šioje patalpoje gali tik administratorius arba jos vadovas.',
+          403,
+          'FORBIDDEN',
+        );
+      }
+    }
 
     const userRows = await db('users')
       .where({ id: ctx.params.userId })
@@ -552,7 +565,10 @@ export default class ReservationsService extends moleculer.Service {
     // knexSnakeCaseMappers: row columns come back camelCased.
     const isOwner = String(reservation.userId) === String(ctx.meta.user.id);
     const isAdmin = ctx.meta.user.role === UserRole.ADMIN;
-    if (!isOwner && !isAdmin) {
+    // A room manager may also cancel reservations in the room(s) they manage.
+    const isManager =
+      !isOwner && !isAdmin && (await isRoomManager(db, ctx.meta.user.id, reservation.roomId));
+    if (!isOwner && !isAdmin && !isManager) {
       throw new Errors.MoleculerClientError(
         'Negalima atšaukti svetimos rezervacijos.',
         403,
