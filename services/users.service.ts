@@ -5,6 +5,7 @@ import { Action, Method, Service } from 'moleculer-decorators';
 import DatabaseMixin from '../mixins/database.mixin';
 import { EndpointType, UserRole } from '../types/constants';
 import { requireAdminHook, AuthUser } from '../utils/auth';
+import { getManagedRoomIds } from '../utils/roomAccess';
 import knex from 'knex';
 import knexConfig from '../knexfile';
 
@@ -258,12 +259,15 @@ export default class UsersService extends moleculer.Service {
   }
 
   /**
-   * Admin-only: paginated user list with optional search.
+   * Paginated user list with optional search. Accessible to admins AND room
+   * managers — the manager portal's user-search picker (add member / assign
+   * reservation) needs it. A plain user (manages no room) gets 403, NOT 401,
+   * so it never trips the FE's 401→logout interceptor.
    */
   @Action({
     rest: 'GET /',
     auth: true,
-    types: [EndpointType.ADMIN],
+    types: [EndpointType.USER],
     params: {
       q: { type: 'string', optional: true, max: 200 },
       limit: { type: 'number', integer: true, convert: true, optional: true, min: 1, max: 200 },
@@ -273,7 +277,18 @@ export default class UsersService extends moleculer.Service {
   async listUsers(
     ctx: Context<{ q?: string; limit?: number; offset?: number }, UserAuthMeta>,
   ) {
-    requireAdminHook(ctx);
+    const isAdmin = ctx.meta?._systemTransition === true || ctx.meta?.user?.role === UserRole.ADMIN;
+    if (!isAdmin) {
+      const uid = ctx.meta?.user?.id;
+      const managed = uid ? await getManagedRoomIds(db, uid) : [];
+      if (managed.length === 0) {
+        throw new Errors.MoleculerClientError(
+          'Šį veiksmą gali atlikti tik administratorius arba patalpos vadovas.',
+          403,
+          'FORBIDDEN',
+        );
+      }
+    }
     const limit = ctx.params.limit ?? 50;
     const offset = ctx.params.offset ?? 0;
     const q = (ctx.params.q || '').trim();
