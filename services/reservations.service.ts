@@ -461,7 +461,10 @@ export default class ReservationsService extends moleculer.Service {
     }
 
     // 3. Desk number in range.
-    if (ctx.params.deskNumber > room.desk_count) {
+    // knexSnakeCaseMappers returns camelCase keys (room.deskCount / room.isShared);
+    // reading snake_case here was a bug — it left shared rooms unrecognised, so a
+    // shared room (309) wrongly demanded an assignment (403 NO_ROOM_ACCESS).
+    if (ctx.params.deskNumber > room.deskCount) {
       throw new Errors.MoleculerClientError(
         'Tokios darbo vietos nėra',
         400,
@@ -470,7 +473,7 @@ export default class ReservationsService extends moleculer.Service {
     }
 
     // 4. Access — shared room OR explicit assignment.
-    if (!room.is_shared) {
+    if (!room.isShared) {
       const assignmentRows = await db('user_room_assignments')
         .where({ user_id: userId, room_id: room.id })
         .limit(1);
