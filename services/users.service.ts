@@ -232,7 +232,10 @@ export default class UsersService extends moleculer.Service {
       .where({ userId })
       .select('roomId');
     const allowedRoomIds = assignments.map((a: any) => a.roomId);
-    return { ...user, allowedRoomIds };
+    // Rooms this user manages (room-manager role) — drives the FE manager portal.
+    const managed = await db('room_managers').where({ userId }).select('roomId');
+    const managedRoomIds = managed.map((m: any) => m.roomId);
+    return { ...user, allowedRoomIds, managedRoomIds };
   }
 
   /**

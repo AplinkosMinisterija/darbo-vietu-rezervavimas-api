@@ -5,8 +5,9 @@ import { Action, Method, Service } from 'moleculer-decorators';
 import knex from 'knex';
 import DatabaseMixin from '../mixins/database.mixin';
 import knexConfig from '../knexfile';
-import { EndpointType } from '../types/constants';
+import { EndpointType, UserRole } from '../types/constants';
 import { requireAdminHook, AuthUser } from '../utils/auth';
+import { isRoomManager } from '../utils/roomAccess';
 
 /**
  * Shared Knex handle. Writes go through Knex directly so we can run the
@@ -208,7 +209,8 @@ export default class RoomsService extends moleculer.Service {
   @Action({
     rest: 'PUT /:id',
     auth: true,
-    types: [EndpointType.ADMIN],
+    // USER-gated at the gateway; the handler enforces admin OR room-manager.
+    types: [EndpointType.USER],
     params: {
       id: 'string',
       number: { type: 'string', min: 1, max: 32, optional: true },
@@ -231,7 +233,30 @@ export default class RoomsService extends moleculer.Service {
       UserAuthMeta
     >,
   ) {
-    requireAdminHook(ctx);
+    // Authorization: admins may edit everything; a room MANAGER may edit only
+    // their own room's desk count + name (number/floor/isShared stay admin-only).
+    const isAdmin = ctx.meta?._systemTransition === true || ctx.meta?.user?.role === UserRole.ADMIN;
+    if (!isAdmin) {
+      const userId = ctx.meta?.user?.id;
+      if (!userId || !(await isRoomManager(db, userId, ctx.params.id))) {
+        throw new Errors.MoleculerClientError(
+          'Šią patalpą gali redaguoti tik administratorius arba jos vadovas.',
+          403,
+          'FORBIDDEN',
+        );
+      }
+      if (
+        ctx.params.number !== undefined ||
+        ctx.params.floor !== undefined ||
+        ctx.params.isShared !== undefined
+      ) {
+        throw new Errors.MoleculerClientError(
+          'Vadovas gali keisti tik darbo vietų skaičių ir pavadinimą.',
+          403,
+          'MANAGER_FIELD_FORBIDDEN',
+        );
+      }
+    }
 
     const existingRows = await db('rooms')
       .where({ id: ctx.params.id })
@@ -344,7 +369,124 @@ export default class RoomsService extends moleculer.Service {
     return { ok: true };
   }
 
+  /**
+   * Admin or room-manager: list users assigned to a room (the room's "members"
+   * the manager schedules). 404 if the room is gone.
+   */
+  @Action({
+    rest: 'GET /:id/members',
+    auth: true,
+    types: [EndpointType.USER],
+    params: { id: 'string' },
+  })
+  async listMembers(ctx: Context<{ id: string }, UserAuthMeta>) {
+    await this.assertManageRoom(ctx, ctx.params.id);
+    const room = await db('rooms').where({ id: ctx.params.id }).whereNull('deleted_at').first();
+    if (!room) throw new Errors.MoleculerClientError('Patalpa nerasta.', 404, 'NOT_FOUND');
+    const rows = await db('user_room_assignments as a')
+      .join('users as u', 'u.id', 'a.userId')
+      .where('a.roomId', ctx.params.id)
+      .whereNull('u.deletedAt')
+      .orderBy('u.displayName', 'asc')
+      .select('u.id', 'u.displayName', 'u.email');
+    return rows.map((u: any) => ({ id: u.id, displayName: u.displayName, email: u.email }));
+  }
+
+  /**
+   * Admin or room-manager: assign a user to this room (room membership).
+   * Idempotent.
+   */
+  @Action({
+    rest: 'POST /:id/members',
+    auth: true,
+    types: [EndpointType.USER],
+    params: { id: 'string', userId: { type: 'uuid' } },
+  })
+  async addMember(ctx: Context<{ id: string; userId: string }, UserAuthMeta>) {
+    await this.assertManageRoom(ctx, ctx.params.id);
+    const room = await db('rooms').where({ id: ctx.params.id }).whereNull('deleted_at').first();
+    if (!room) throw new Errors.MoleculerClientError('Patalpa nerasta.', 404, 'NOT_FOUND');
+    const u = await db('users').where({ id: ctx.params.userId }).whereNull('deleted_at').first();
+    if (!u) throw new Errors.MoleculerClientError('Naudotojas nerastas.', 404, 'USER_NOT_FOUND');
+    await db('user_room_assignments')
+      .insert({ user_id: ctx.params.userId, room_id: ctx.params.id })
+      .onConflict(['user_id', 'room_id'])
+      .ignore();
+    await this.safeAuditLog(ctx, 'ROOM_ADD_MEMBER', { roomId: ctx.params.id, userId: ctx.params.userId });
+    return { ok: true };
+  }
+
+  /**
+   * Admin or room-manager: remove a user's assignment to this room.
+   */
+  @Action({
+    rest: 'DELETE /:id/members/:userId',
+    auth: true,
+    types: [EndpointType.USER],
+    params: { id: 'string', userId: 'string' },
+  })
+  async removeMember(ctx: Context<{ id: string; userId: string }, UserAuthMeta>) {
+    await this.assertManageRoom(ctx, ctx.params.id);
+    await db('user_room_assignments')
+      .where({ user_id: ctx.params.userId, room_id: ctx.params.id })
+      .delete();
+    await this.safeAuditLog(ctx, 'ROOM_REMOVE_MEMBER', { roomId: ctx.params.id, userId: ctx.params.userId });
+    return { ok: true };
+  }
+
+  /**
+   * Admin or room-manager: reservations in this room over a date range (for the
+   * manager's schedule view). Includes the booked user's name.
+   */
+  @Action({
+    rest: 'GET /:id/reservations',
+    auth: true,
+    types: [EndpointType.USER],
+    params: {
+      id: 'string',
+      dateFrom: { type: 'string', pattern: /^\d{4}-\d{2}-\d{2}$/, optional: true },
+      dateTo: { type: 'string', pattern: /^\d{4}-\d{2}-\d{2}$/, optional: true },
+    },
+  })
+  async roomReservations(
+    ctx: Context<{ id: string; dateFrom?: string; dateTo?: string }, UserAuthMeta>,
+  ) {
+    await this.assertManageRoom(ctx, ctx.params.id);
+    const q = db('reservations as res')
+      .join('users as u', 'u.id', 'res.userId')
+      .where('res.roomId', ctx.params.id);
+    if (ctx.params.dateFrom) q.andWhere('res.date', '>=', ctx.params.dateFrom);
+    if (ctx.params.dateTo) q.andWhere('res.date', '<=', ctx.params.dateTo);
+    const rows = await q
+      .orderBy([{ column: 'res.date', order: 'asc' }, { column: 'res.deskNumber', order: 'asc' }])
+      .select('res.id', 'res.deskNumber', 'res.date', 'u.id as userId', 'u.displayName as userDisplayName');
+    return rows.map((r: any) => ({
+      id: r.id,
+      deskNumber: r.deskNumber,
+      date: r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date).slice(0, 10),
+      user: { id: r.userId, displayName: r.userDisplayName },
+    }));
+  }
+
   // --- helpers ---
+
+  /**
+   * Authorization gate for room-scoped management: passes for admins (and
+   * trusted internal calls) and for users who manage `roomId`. Throws 403
+   * otherwise.
+   */
+  @Method
+  async assertManageRoom(ctx: Context<any, UserAuthMeta>, roomId: string) {
+    if (ctx.meta?._systemTransition === true || ctx.meta?.user?.role === UserRole.ADMIN) return;
+    const userId = ctx.meta?.user?.id;
+    if (!userId || !(await isRoomManager(db, userId, roomId))) {
+      throw new Errors.MoleculerClientError(
+        'Šią patalpą gali tvarkyti tik administratorius arba jos vadovas.',
+        403,
+        'FORBIDDEN',
+      );
+    }
+  }
 
   @Method
   async safeAuditLog(ctx: Context<any, UserAuthMeta>, action: string, payload: any) {
