@@ -8,3 +8,7 @@ coverage/
 .idea/
 .vscode/
 yarn-error.log
+
+# Local PII data — never commit real contact exports
+Aplinkos_ministerija_kontaktai.xlsx
+*.xlsx
