@@ -485,7 +485,10 @@ export default class ReservationsService extends moleculer.Service {
     const takenByDate = new Map<string, Set<number>>();
     for (const o of occ) {
       if (!takenByDate.has(o.ds)) takenByDate.set(o.ds, new Set());
-      takenByDate.get(o.ds)!.add(Number(o.desk_number));
+      // knexSnakeCaseMappers returns camelCase result keys — `o.desk_number`
+      // would be undefined (→ NaN), so occupancy was never seen and every day
+      // wrongly planned desk 1, colliding with the existing booking on insert.
+      takenByDate.get(o.ds)!.add(Number(o.deskNumber));
     }
 
     let created = 0;
@@ -623,7 +626,10 @@ export default class ReservationsService extends moleculer.Service {
     const takenByDate = new Map<string, Set<number>>();
     for (const o of occ) {
       if (!takenByDate.has(o.ds)) takenByDate.set(o.ds, new Set());
-      takenByDate.get(o.ds)!.add(Number(o.desk_number));
+      // knexSnakeCaseMappers returns camelCase result keys — `o.desk_number`
+      // would be undefined (→ NaN), so occupancy was never seen and every day
+      // wrongly planned desk 1, colliding with the existing booking on insert.
+      takenByDate.get(o.ds)!.add(Number(o.deskNumber));
     }
 
     // Pre-check ALL dates (all-or-nothing) — see buildRecurringPlan.
