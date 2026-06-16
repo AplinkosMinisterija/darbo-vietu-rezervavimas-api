@@ -403,6 +403,146 @@ export default class ReservationsService extends moleculer.Service {
   }
 
   /**
+   * Admin or room-manager: bulk-assign a user to a room on the given WEEKDAYS
+   * (1=Mon … 5=Fri) for the next `weeks` weeks — for standing/recurring
+   * schedules without clicking each calendar date. Honours a fixed deskNumber
+   * if given, else auto-picks the lowest free desk each day. Skips days the user
+   * already has a reservation, or where no desk is free. Returns a summary.
+   */
+  @Action({
+    rest: 'POST /assign-recurring',
+    auth: true,
+    types: [EndpointType.USER],
+    params: {
+      userId: { type: 'uuid' },
+      roomId: { type: 'uuid' },
+      deskNumber: { type: 'number', integer: true, convert: true, min: 1, optional: true },
+      weekdays: {
+        type: 'array',
+        items: { type: 'number', integer: true, convert: true, min: 1, max: 5 },
+        min: 1,
+        max: 5,
+      },
+      weeks: { type: 'number', integer: true, convert: true, min: 1, max: 12 },
+    },
+  })
+  async assignRecurring(
+    ctx: Context<
+      { userId: string; roomId: string; deskNumber?: number; weekdays: number[]; weeks: number },
+      UserAuthMeta
+    >,
+  ) {
+    // Same gate as adminAssign: admin OR the target room's manager.
+    const isAdmin = ctx.meta?._systemTransition === true || ctx.meta?.user?.role === UserRole.ADMIN;
+    if (!isAdmin) {
+      const uid = ctx.meta?.user?.id;
+      if (!uid || !(await isRoomManager(db, uid, ctx.params.roomId))) {
+        throw new Errors.MoleculerClientError(
+          'Rezervuoti šioje patalpoje gali tik administratorius arba jos vadovas.',
+          403,
+          'FORBIDDEN',
+        );
+      }
+    }
+
+    const userRows = await db('users').where({ id: ctx.params.userId }).whereNull('deleted_at').limit(1);
+    if (userRows.length === 0) {
+      throw new Errors.MoleculerClientError('Naudotojas nerastas.', 404, 'USER_NOT_FOUND');
+    }
+    const roomRows = await db('rooms').where({ id: ctx.params.roomId }).whereNull('deleted_at').limit(1);
+    if (roomRows.length === 0) {
+      throw new Errors.MoleculerClientError('Patalpa nerasta.', 404, 'ROOM_NOT_FOUND');
+    }
+    const room = roomRows[0];
+    const cap: number = room.deskCount;
+    if (ctx.params.deskNumber && ctx.params.deskNumber > cap) {
+      throw new Errors.MoleculerClientError('Tokios darbo vietos nėra', 400, 'INVALID_DESK_NUMBER');
+    }
+
+    // Target dates: from server CURRENT_DATE (avoids TZ skew), the next
+    // `weeks` weeks, keeping dates whose ISO weekday (Mon=1..Sun=7) is selected.
+    const wanted = new Set(ctx.params.weekdays);
+    const [{ today }] = await db
+      .raw<{ rows: Array<{ today: string }> }>("SELECT to_char(CURRENT_DATE,'YYYY-MM-DD') AS today")
+      .then((r: any) => r.rows);
+    const base = new Date(`${today}T00:00:00Z`);
+    const dates: string[] = [];
+    for (let i = 0; i < ctx.params.weeks * 7; i += 1) {
+      const d = new Date(base);
+      d.setUTCDate(base.getUTCDate() + i);
+      const dow = d.getUTCDay();
+      const iso = dow === 0 ? 7 : dow;
+      if (wanted.has(iso)) dates.push(d.toISOString().slice(0, 10));
+    }
+
+    // Preload: which of these dates the user already has, and desk occupancy.
+    const mine = new Set(
+      (await db('reservations').where({ user_id: ctx.params.userId }).whereIn('date', dates)
+        .select(db.raw("to_char(date,'YYYY-MM-DD') as ds")) as any[]).map((r) => r.ds),
+    );
+    const occ = (await db('reservations').where({ room_id: ctx.params.roomId }).whereIn('date', dates)
+      .select('desk_number', db.raw("to_char(date,'YYYY-MM-DD') as ds")) as any[]);
+    const takenByDate = new Map<string, Set<number>>();
+    for (const o of occ) {
+      if (!takenByDate.has(o.ds)) takenByDate.set(o.ds, new Set());
+      takenByDate.get(o.ds)!.add(Number(o.desk_number));
+    }
+
+    let created = 0;
+    let skippedExisting = 0;
+    let noDesk = 0;
+    for (const date of dates) {
+      if (mine.has(date)) {
+        skippedExisting += 1;
+        continue;
+      }
+      const taken = takenByDate.get(date) ?? new Set<number>();
+      let desk = 0;
+      if (ctx.params.deskNumber) {
+        if (!taken.has(ctx.params.deskNumber)) desk = ctx.params.deskNumber;
+      } else {
+        for (let n = 1; n <= cap; n += 1) {
+          if (!taken.has(n)) {
+            desk = n;
+            break;
+          }
+        }
+      }
+      if (!desk) {
+        noDesk += 1;
+        continue;
+      }
+      try {
+        await db('reservations').insert({
+          user_id: ctx.params.userId,
+          room_id: ctx.params.roomId,
+          desk_number: desk,
+          date,
+        });
+        taken.add(desk);
+        takenByDate.set(date, taken);
+        mine.add(date);
+        created += 1;
+      } catch (err: any) {
+        // 23505 = raced into a unique (room+desk+date or user+date) → skip.
+        if (err?.code === '23505') skippedExisting += 1;
+        else throw err;
+      }
+    }
+
+    await this.safeAuditLog(ctx, 'ASSIGN_RECURRING', {
+      targetUserId: ctx.params.userId,
+      roomId: ctx.params.roomId,
+      weekdays: ctx.params.weekdays,
+      weeks: ctx.params.weeks,
+      created,
+      skippedExisting,
+      noDesk,
+    });
+    return { created, skippedExisting, noDesk };
+  }
+
+  /**
    * User-facing create. Validation flow:
    *
    *   1. Room exists + not soft-deleted (404).
