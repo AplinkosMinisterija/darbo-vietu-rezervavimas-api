@@ -543,6 +543,140 @@ export default class ReservationsService extends moleculer.Service {
   }
 
   /**
+   * Self-service recurring reservation. A regular USER books a desk for
+   * THEMSELVES on the chosen weekdays over the next `weeks` weeks.
+   *
+   * Auth: USER only; the target is ALWAYS the caller (no `userId` param), and
+   * the room must be accessible to them (shared OR an explicit assignment) —
+   * same boundary as `createReservation`.
+   *
+   * All-or-nothing: every chosen date is pre-checked; if ANY date has no free
+   * desk ("room full") OR the user already holds a reservation that day, the
+   * whole request is rejected (409 RECURRING_CONFLICT, offending dates in
+   * `data`) and NOTHING is created. On success all rows insert inside one
+   * transaction, so a mid-batch unique race rolls everything back rather than
+   * leaving a partial set.
+   *
+   * Desk is auto-picked (lowest free) per day — recurring is about "a seat",
+   * not a specific desk.
+   */
+  @Action({
+    rest: 'POST /reserve-recurring',
+    auth: true,
+    types: [EndpointType.USER],
+    params: {
+      roomId: { type: 'uuid' },
+      weekdays: {
+        type: 'array',
+        items: { type: 'number', integer: true, convert: true, min: 1, max: 5 },
+        min: 1,
+        max: 5,
+      },
+      weeks: { type: 'number', integer: true, convert: true, min: 1, max: 12 },
+    },
+  })
+  async reserveRecurring(
+    ctx: Context<{ roomId: string; weekdays: number[]; weeks: number }, UserAuthMeta>,
+  ) {
+    if (!ctx.meta?.user?.id) {
+      throw new Errors.MoleculerClientError('Neprisijungta.', 401, 'NOT_AUTHENTICATED');
+    }
+    // Forced self — a user can only ever reserve for themselves here.
+    const userId = ctx.meta.user.id;
+
+    const roomRows = await db('rooms').where({ id: ctx.params.roomId }).whereNull('deleted_at').limit(1);
+    if (roomRows.length === 0) {
+      throw new Errors.MoleculerClientError('Patalpa nerasta.', 404, 'ROOM_NOT_FOUND');
+    }
+    const room = roomRows[0];
+    const cap: number = room.deskCount;
+
+    // Access — shared room OR explicit assignment (mirrors createReservation).
+    if (!room.isShared) {
+      const assignmentRows = await db('user_room_assignments')
+        .where({ user_id: userId, room_id: room.id })
+        .limit(1);
+      if (assignmentRows.length === 0) {
+        throw new Errors.MoleculerClientError(
+          'Tu negali rezervuoti šioje patalpoje',
+          403,
+          'NO_ROOM_ACCESS',
+        );
+      }
+    }
+
+    // Target dates: from server CURRENT_DATE (avoids TZ skew), the next
+    // `weeks` weeks, keeping dates whose ISO weekday (Mon=1..Fri=5) is selected.
+    const [{ today }] = await db
+      .raw<{ rows: Array<{ today: string }> }>("SELECT to_char(CURRENT_DATE,'YYYY-MM-DD') AS today")
+      .then((r: any) => r.rows);
+    const dates = computeRecurringDates(today, ctx.params.weekdays, ctx.params.weeks);
+
+    // Preload: dates the user already holds (any room), and this room's desk
+    // occupancy on the target dates.
+    const mine = new Set(
+      (await db('reservations').where({ user_id: userId }).whereIn('date', dates)
+        .select(db.raw("to_char(date,'YYYY-MM-DD') as ds")) as any[]).map((r) => r.ds),
+    );
+    const occ = (await db('reservations').where({ room_id: room.id }).whereIn('date', dates)
+      .select('desk_number', db.raw("to_char(date,'YYYY-MM-DD') as ds")) as any[]);
+    const takenByDate = new Map<string, Set<number>>();
+    for (const o of occ) {
+      if (!takenByDate.has(o.ds)) takenByDate.set(o.ds, new Set());
+      takenByDate.get(o.ds)!.add(Number(o.desk_number));
+    }
+
+    // Pre-check ALL dates (all-or-nothing) — see buildRecurringPlan.
+    const { plan, full, alreadyBooked } = buildRecurringPlan(dates, mine, takenByDate, cap);
+
+    if (full.length > 0 || alreadyBooked.length > 0) {
+      const parts: string[] = [];
+      if (full.length) parts.push(`nėra laisvų vietų: ${full.join(', ')}`);
+      if (alreadyBooked.length) parts.push(`jau turi rezervaciją: ${alreadyBooked.join(', ')}`);
+      throw new Errors.MoleculerClientError(
+        `Negalima sukurti — ${parts.join('; ')}`,
+        409,
+        'RECURRING_CONFLICT',
+        { full, alreadyBooked },
+      );
+    }
+
+    // All clear → insert atomically. A unique race mid-batch rolls the whole
+    // transaction back, preserving all-or-nothing.
+    try {
+      await db.transaction(async (trx) => {
+        for (const { date, desk } of plan) {
+          await trx('reservations').insert({
+            user_id: userId,
+            room_id: room.id,
+            desk_number: desk,
+            date,
+          });
+        }
+      });
+    } catch (err: any) {
+      if (err?.code === '23505') {
+        throw new Errors.MoleculerClientError(
+          'Viena iš vietų ką tik užimta — pabandyk dar kartą.',
+          409,
+          'RECURRING_CONFLICT',
+          { raced: true },
+        );
+      }
+      throw err;
+    }
+
+    await this.safeAuditLog(ctx, 'RESERVE_RECURRING', {
+      roomId: room.id,
+      weekdays: ctx.params.weekdays,
+      weeks: ctx.params.weeks,
+      created: plan.length,
+      dates: plan.map((p) => p.date),
+    });
+    return { created: plan.length, dates: plan.map((p) => p.date) };
+  }
+
+  /**
    * User-facing create. Validation flow:
    *
    *   1. Room exists + not soft-deleted (404).
@@ -761,4 +895,69 @@ export default class ReservationsService extends moleculer.Service {
       this.logger.warn(`[reservations] audit.log failed: ${err?.message || err}`);
     }
   }
+}
+
+/**
+ * Pure helpers for recurring reservations — extracted so the date math and the
+ * all-or-nothing conflict logic are unit-testable without a DB. `today` is the
+ * server's CURRENT_DATE as 'YYYY-MM-DD' (already TZ-resolved by the caller).
+ */
+export function computeRecurringDates(today: string, weekdays: number[], weeks: number): string[] {
+  const wanted = new Set(weekdays);
+  const base = new Date(`${today}T00:00:00Z`);
+  const dates: string[] = [];
+  for (let i = 0; i < weeks * 7; i += 1) {
+    const d = new Date(base);
+    d.setUTCDate(base.getUTCDate() + i);
+    const dow = d.getUTCDay();
+    const iso = dow === 0 ? 7 : dow; // Mon=1..Sun=7
+    if (wanted.has(iso)) dates.push(d.toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
+export interface RecurringPlan {
+  /** Dates that can be booked, each with the auto-picked lowest free desk. */
+  plan: Array<{ date: string; desk: number }>;
+  /** Dates where the room has no free desk (full). */
+  full: string[];
+  /** Dates where the user already holds a reservation (any room — 1/day rule). */
+  alreadyBooked: string[];
+}
+
+/**
+ * Build the insert plan for the given dates, auto-picking the lowest free desk
+ * per day. Splits out conflicts so the caller can enforce all-or-nothing:
+ *   - `full`          — no free desk that day (room full)
+ *   - `alreadyBooked` — user already has a reservation that day (1/day rule)
+ */
+export function buildRecurringPlan(
+  dates: string[],
+  mine: Set<string>,
+  takenByDate: Map<string, Set<number>>,
+  cap: number,
+): RecurringPlan {
+  const plan: Array<{ date: string; desk: number }> = [];
+  const full: string[] = [];
+  const alreadyBooked: string[] = [];
+  for (const date of dates) {
+    if (mine.has(date)) {
+      alreadyBooked.push(date);
+      continue;
+    }
+    const taken = takenByDate.get(date) ?? new Set<number>();
+    let desk = 0;
+    for (let n = 1; n <= cap; n += 1) {
+      if (!taken.has(n)) {
+        desk = n;
+        break;
+      }
+    }
+    if (!desk) {
+      full.push(date);
+      continue;
+    }
+    plan.push({ date, desk });
+  }
+  return { plan, full, alreadyBooked };
 }
