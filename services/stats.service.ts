@@ -46,28 +46,30 @@ export default class StatsService extends moleculer.Service {
     },
   })
   async byFloor(ctx: Context<{ date: string }, UserAuthMeta>) {
-    // LEFT JOIN reservations on (room_id + date) so floors with zero
-    // bookings still appear with reserved=0. COUNT(res.id) ignores NULL
-    // joins automatically.
-    const rows = await db('rooms as r')
-      .leftJoin('reservations as res', function () {
-        this.on('res.room_id', '=', 'r.id').andOn('res.date', '=', db.raw('?', [ctx.params.date]));
-      })
+    // Two SEPARATE aggregations. Joining reservations into the desk-count SUM
+    // fans the room row out once per reservation, so SUM(desk_count) would be
+    // multiplied by the bookings-per-room — the "458 vietų" inflation bug.
+    const totals = await db('rooms')
+      .whereNull('deleted_at')
+      .groupBy('floor')
+      .orderBy('floor', 'asc')
+      .select('floor', db.raw('SUM(desk_count)::int AS total'));
+
+    const reservedRows = await db('reservations as res')
+      .join('rooms as r', 'r.id', 'res.room_id')
       .whereNull('r.deleted_at')
+      .where('res.date', ctx.params.date)
       .groupBy('r.floor')
-      .orderBy('r.floor', 'asc')
-      .select(
-        'r.floor',
-        db.raw('SUM(r.desk_count)::int AS total'),
-        db.raw('COUNT(res.id)::int AS reserved'),
-      );
+      .select('r.floor', db.raw('COUNT(res.id)::int AS reserved'));
+
+    const reservedByFloor = new Map<string, number>(
+      (reservedRows as any[]).map((r) => [String(r.floor), Number(r.reserved) || 0]),
+    );
 
     const result: Record<string, { total: number; reserved: number }> = {};
-    for (const row of rows as any[]) {
-      result[String(row.floor)] = {
-        total: Number(row.total) || 0,
-        reserved: Number(row.reserved) || 0,
-      };
+    for (const row of totals as any[]) {
+      const f = String(row.floor);
+      result[f] = { total: Number(row.total) || 0, reserved: reservedByFloor.get(f) ?? 0 };
     }
     return result;
   }
