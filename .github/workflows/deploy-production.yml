@@ -16,3 +16,5 @@ jobs:
       environment: Production
       enable-sentry: false
       docker-image: ghcr.io/AplinkosMinisterija/darbo-vietu-rezervavimas-api
+      cache-from: type=registry,ref=ghcr.io/aplinkosministerija/darbo-vietu-rezervavimas-api:buildcache
+      cache-to: type=registry,ref=ghcr.io/aplinkosministerija/darbo-vietu-rezervavimas-api:buildcache,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
