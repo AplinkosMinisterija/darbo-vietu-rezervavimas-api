@@ -587,7 +587,13 @@ export default class ReservationsService extends moleculer.Service {
     // Forced self — a user can only ever reserve for themselves here.
     const userId = ctx.meta.user.id;
 
-    const roomRows = await db('rooms').where({ id: ctx.params.roomId }).whereNull('deleted_at').limit(1);
+    // `today` piggybacks on the room query (server CURRENT_DATE avoids TZ
+    // skew) — no separate round-trip for it.
+    const roomRows = await db('rooms')
+      .where({ id: ctx.params.roomId })
+      .whereNull('deleted_at')
+      .limit(1)
+      .select('*', db.raw("to_char(CURRENT_DATE,'YYYY-MM-DD') AS today"));
     if (roomRows.length === 0) {
       throw new Errors.MoleculerClientError('Patalpa nerasta.', 404, 'ROOM_NOT_FOUND');
     }
@@ -608,21 +614,19 @@ export default class ReservationsService extends moleculer.Service {
       }
     }
 
-    // Target dates: from server CURRENT_DATE (avoids TZ skew), the next
-    // `weeks` weeks, keeping dates whose ISO weekday (Mon=1..Fri=5) is selected.
-    const [{ today }] = await db
-      .raw<{ rows: Array<{ today: string }> }>("SELECT to_char(CURRENT_DATE,'YYYY-MM-DD') AS today")
-      .then((r: any) => r.rows);
-    const dates = computeRecurringDates(today, ctx.params.weekdays, ctx.params.weeks);
+    // Target dates: the next `weeks` weeks from server CURRENT_DATE, keeping
+    // dates whose ISO weekday (Mon=1..Fri=5) is selected.
+    const dates = computeRecurringDates(room.today, ctx.params.weekdays, ctx.params.weeks);
 
-    // Preload: dates the user already holds (any room), and this room's desk
-    // occupancy on the target dates.
-    const mine = new Set(
-      (await db('reservations').where({ user_id: userId }).whereIn('date', dates)
-        .select(db.raw("to_char(date,'YYYY-MM-DD') as ds")) as any[]).map((r) => r.ds),
-    );
-    const occ = (await db('reservations').where({ room_id: room.id }).whereIn('date', dates)
-      .select('desk_number', db.raw("to_char(date,'YYYY-MM-DD') as ds")) as any[]);
+    // Preload in parallel (independent queries): dates the user already holds
+    // (any room), and this room's desk occupancy on the target dates.
+    const [mineRows, occ] = (await Promise.all([
+      db('reservations').where({ user_id: userId }).whereIn('date', dates)
+        .select(db.raw("to_char(date,'YYYY-MM-DD') as ds")),
+      db('reservations').where({ room_id: room.id }).whereIn('date', dates)
+        .select('desk_number', db.raw("to_char(date,'YYYY-MM-DD') as ds")),
+    ])) as [any[], any[]];
+    const mine = new Set(mineRows.map((r) => r.ds));
     const takenByDate = new Map<string, Set<number>>();
     for (const o of occ) {
       if (!takenByDate.has(o.ds)) takenByDate.set(o.ds, new Set());
