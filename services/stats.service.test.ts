@@ -1,5 +1,27 @@
 import { describe, it, expect } from 'vitest';
-import { buildDaySeries, computeKpis, type DayPoint } from './stats.service';
+import {
+  assertValidRange,
+  buildDaySeries,
+  computeKpis,
+  type DayPoint,
+} from './stats.service';
+
+describe('assertValidRange', () => {
+  it('accepts a normal range and a single day', () => {
+    expect(() => assertValidRange('2026-01-01', '2026-12-31')).not.toThrow();
+    expect(() => assertValidRange('2026-07-17', '2026-07-17')).not.toThrow();
+  });
+
+  it('rejects from > to', () => {
+    expect(() => assertValidRange('2026-07-18', '2026-07-17')).toThrow(/laikotarpis/i);
+  });
+
+  it('rejects a span over ~5 years', () => {
+    expect(() => assertValidRange('2020-01-01', '2026-01-01')).toThrow(/laikotarpis/i);
+    // 1827 days inclusive is still fine (2022-01-01 → 2026-12-31 is 1826 days).
+    expect(() => assertValidRange('2022-01-01', '2026-12-31')).not.toThrow();
+  });
+});
 
 describe('buildDaySeries', () => {
   it('fills every calendar day in range with 0 when missing', () => {
