@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   assertValidRange,
   buildDaySeries,
+  buildStatsWorkbook,
   computeKpis,
   type DayPoint,
+  type StatsWorkbookInput,
 } from './stats.service';
 
 describe('assertValidRange', () => {
@@ -113,5 +115,107 @@ describe('computeKpis', () => {
       workdayAvgOccupancyPct: 0,
       peakDay: null,
     });
+  });
+});
+
+describe('buildStatsWorkbook', () => {
+  // Mon 2026-07-13 … Wed 2026-07-15, capacity 10
+  const input: StatsWorkbookInput = {
+    from: '2026-07-13',
+    to: '2026-07-15',
+    capacity: 10,
+    days: [
+      { date: '2026-07-13', reserved: 8 },
+      { date: '2026-07-14', reserved: 0 },
+      { date: '2026-07-15', reserved: 5 },
+    ],
+    rooms: [
+      { number: '101', name: 'Pirmas', floor: 1, deskCount: 4, reserved: 6 },
+      { number: '202', name: 'Antras', floor: 2, deskCount: 0, reserved: 0 },
+    ],
+    kpi: {
+      totalReservations: 13,
+      workdayAvgOccupancyPct: 43.3,
+      peakDay: { date: '2026-07-13', reserved: 8 },
+      reservingUsers: 4,
+      activeUsers: 20,
+    },
+    detail: [
+      {
+        date: '2026-07-13',
+        displayName: 'Jonas Jonaitis',
+        email: 'jonas@am.lt',
+        roomNumber: '101',
+        roomName: 'Pirmas',
+        deskNumber: 2,
+      },
+    ],
+  };
+
+  const wb = buildStatsWorkbook(input);
+
+  it('creates the five expected sheets', () => {
+    expect(wb.worksheets.map((s) => s.name)).toEqual([
+      'Suvestinė',
+      'Pagal dieną',
+      'Pagal kabinetą',
+      'Pagal savaitės dieną',
+      'Rezervacijos',
+    ]);
+  });
+
+  it('writes one row per day with weekday name and occupancy %', () => {
+    const sheet = wb.getWorksheet('Pagal dieną')!;
+    expect(sheet.rowCount).toBe(4); // header + 3 days
+    const row = sheet.getRow(2);
+    expect(row.getCell(1).value).toBe('2026-07-13');
+    expect(row.getCell(2).value).toBe('Pirmadienis');
+    expect(row.getCell(3).value).toBe(8);
+    expect(row.getCell(4).value).toBe(10);
+    expect(row.getCell(5).value).toBe(80);
+  });
+
+  it('computes room occupancy % over the whole period, 0 on zero desks', () => {
+    const sheet = wb.getWorksheet('Pagal kabinetą')!;
+    const first = sheet.getRow(2);
+    // 6 reserved / (4 desks × 3 days) = 50%
+    expect(first.getCell(1).value).toBe('101');
+    expect(first.getCell(6).value).toBe(50);
+    const second = sheet.getRow(3);
+    expect(second.getCell(6).value).toBe(0); // deskCount 0 → no division by zero
+  });
+
+  it('aggregates weekday averages only over weekdays present in range', () => {
+    const sheet = wb.getWorksheet('Pagal savaitės dieną')!;
+    // Row 2 = Pirmadienis: one Monday, avg reserved 8, avg occupancy 80%
+    const monday = sheet.getRow(2);
+    expect(monday.getCell(1).value).toBe('Pirmadienis');
+    expect(monday.getCell(2).value).toBe(1);
+    expect(monday.getCell(3).value).toBe(8);
+    expect(monday.getCell(4).value).toBe(80);
+    // Only weekdays that occur in the range are listed (Mon–Wed here).
+    expect(sheet.rowCount).toBe(4);
+  });
+
+  it('writes reservation detail rows verbatim', () => {
+    const sheet = wb.getWorksheet('Rezervacijos')!;
+    const row = sheet.getRow(2);
+    expect(row.getCell(1).value).toBe('2026-07-13');
+    expect(row.getCell(2).value).toBe('Jonas Jonaitis');
+    expect(row.getCell(3).value).toBe('jonas@am.lt');
+    expect(row.getCell(4).value).toBe('101');
+    expect(row.getCell(5).value).toBe('Pirmas');
+    expect(row.getCell(6).value).toBe(2);
+  });
+
+  it('summarises KPIs including the "X iš Y" users line', () => {
+    const sheet = wb.getWorksheet('Suvestinė')!;
+    const values: Array<[unknown, unknown]> = [];
+    sheet.eachRow((row) => values.push([row.getCell(1).value, row.getCell(2).value]));
+    expect(values).toContainEqual(['Laikotarpis', '2026-07-13 – 2026-07-15']);
+    expect(values).toContainEqual(['Rezervacijų iš viso', 13]);
+    expect(values).toContainEqual(['Vid. užimtumas darbo dienomis (%)', 43.3]);
+    expect(values).toContainEqual(['Rezervavo naudotojų', '4 iš 20']);
+    expect(values).toContainEqual(['Pikinė diena', '2026-07-13 (8)']);
   });
 });
