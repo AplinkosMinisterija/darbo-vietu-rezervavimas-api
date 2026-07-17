@@ -16,6 +16,62 @@ interface UserAuthMeta {
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
+export interface DayPoint {
+  date: string; // 'YYYY-MM-DD'
+  reserved: number;
+}
+
+/**
+ * Expands a [from, to] date range into one entry per calendar day, taking
+ * counts from `reservedByDate` and filling gaps with 0. Iterates in UTC so
+ * local DST switches can never skip or double a day.
+ */
+export function buildDaySeries(
+  from: string,
+  to: string,
+  reservedByDate: Map<string, number>,
+): DayPoint[] {
+  const days: DayPoint[] = [];
+  const end = Date.parse(`${to}T00:00:00Z`);
+  for (let t = Date.parse(`${from}T00:00:00Z`); t <= end; t += 86_400_000) {
+    const date = new Date(t).toISOString().slice(0, 10);
+    days.push({ date, reserved: reservedByDate.get(date) ?? 0 });
+  }
+  return days;
+}
+
+export interface StatsKpi {
+  totalReservations: number;
+  /** Mean occupancy over Mon–Fri days only, percent 0–100, 1 decimal. */
+  workdayAvgOccupancyPct: number;
+  /** First day holding the range maximum; null when nothing is reserved. */
+  peakDay: { date: string; reserved: number } | null;
+}
+
+export function computeKpis(days: DayPoint[], capacity: number): StatsKpi {
+  let total = 0;
+  let workdayReserved = 0;
+  let workdayCount = 0;
+  let peak: StatsKpi['peakDay'] = null;
+
+  for (const d of days) {
+    total += d.reserved;
+    const dow = new Date(`${d.date}T00:00:00Z`).getUTCDay();
+    if (dow >= 1 && dow <= 5) {
+      workdayReserved += d.reserved;
+      workdayCount += 1;
+    }
+    if (d.reserved > 0 && (!peak || d.reserved > peak.reserved)) {
+      peak = { date: d.date, reserved: d.reserved };
+    }
+  }
+
+  const denominator = capacity * workdayCount;
+  const pct = denominator > 0 ? Math.round((workdayReserved / denominator) * 1000) / 10 : 0;
+
+  return { totalReservations: total, workdayAvgOccupancyPct: pct, peakDay: peak };
+}
+
 /**
  * Floor-level aggregation for the "Apžvalga" dashboard tab. Single SQL
  * round-trip:
