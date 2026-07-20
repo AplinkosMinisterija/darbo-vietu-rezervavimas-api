@@ -5,7 +5,7 @@ import {
   type UserRow,
   type RoomRow,
   type AssignmentRow,
-} from './export.service';
+} from './exportWorkbook';
 
 const users: UserRow[] = [
   { id: 'u1', email: 'jonas@am.lt', displayName: 'Jonas Jonaitis', role: 'USER', deletedAt: null, createdAt: null },
