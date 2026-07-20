@@ -6,7 +6,7 @@ import {
   computeKpis,
   type DayPoint,
   type StatsWorkbookInput,
-} from './stats.service';
+} from './stats';
 
 describe('assertValidRange', () => {
   it('accepts a normal range and a single day', () => {
