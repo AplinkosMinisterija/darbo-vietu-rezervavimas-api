@@ -8,6 +8,7 @@ import knexConfig from '../knexfile';
 import { EndpointType, UserRole } from '../types/constants';
 import { requireAdminHook, AuthUser } from '../utils/auth';
 import { isRoomManager } from '../utils/roomAccess';
+import { applyReservationFilters } from '../utils/reservationFilters';
 
 const db = knex(knexConfig);
 
@@ -208,7 +209,7 @@ export default class ReservationsService extends moleculer.Service {
   /**
    * Admin: cross-cutting reservation browser. Joins users + rooms so the
    * admin UI doesn't need follow-up lookups. Filters: dateFrom, dateTo,
-   * userId, roomId.
+   * userId, roomId, floor, shared.
    */
   @Action({
     rest: 'GET /all',
@@ -219,6 +220,8 @@ export default class ReservationsService extends moleculer.Service {
       dateTo: { type: 'string', pattern: DATE_PATTERN, optional: true },
       userId: { type: 'string', optional: true },
       roomId: { type: 'string', optional: true },
+      floor: { type: 'number', integer: true, convert: true, optional: true, min: 0, max: 10 },
+      shared: { type: 'boolean', convert: true, optional: true },
       limit: { type: 'number', integer: true, convert: true, optional: true, min: 1, max: 500 },
       offset: { type: 'number', integer: true, convert: true, optional: true, min: 0 },
     },
@@ -230,6 +233,8 @@ export default class ReservationsService extends moleculer.Service {
         dateTo?: string;
         userId?: string;
         roomId?: string;
+        floor?: number;
+        shared?: boolean;
         limit?: number;
         offset?: number;
       },
@@ -244,10 +249,7 @@ export default class ReservationsService extends moleculer.Service {
       .leftJoin('users as u', 'u.id', 'r.user_id')
       .leftJoin('rooms as room', 'room.id', 'r.room_id');
 
-    if (ctx.params.dateFrom) baseQuery.andWhere('r.date', '>=', ctx.params.dateFrom);
-    if (ctx.params.dateTo) baseQuery.andWhere('r.date', '<=', ctx.params.dateTo);
-    if (ctx.params.userId) baseQuery.andWhere('r.user_id', ctx.params.userId);
-    if (ctx.params.roomId) baseQuery.andWhere('r.room_id', ctx.params.roomId);
+    applyReservationFilters(baseQuery, ctx.params);
 
     const [{ count }] = await baseQuery.clone().count<{ count: string }[]>('r.id as count');
     const rows = await baseQuery
